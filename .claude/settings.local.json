@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift build:*)",
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(chmod:*)"
+    ]
+  }
+}
