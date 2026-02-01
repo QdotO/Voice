@@ -1,5 +1,26 @@
 .DS_Store
+.DS_Store?
+._*
+
+# SwiftPM
 .build/
+.swiftpm/
+Package.resolved.bak
+
+# Xcode
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# App bundles and logs
 Whisper.app/
 Logs/
+*.log
+
+# IDEs
 .vscode/
+.idea/
