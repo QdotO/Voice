@@ -21,7 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusHostingView: NSHostingView<StatusView>?
     private var historyMenu: NSMenu?
     private var historyWindow: NSWindow?
+    private var voiceMemosWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var mainWindow: NSWindow?
     private var hotkeyMonitor: NSObjectProtocol?
     private var currentHotkeyKeyCode: Int?
     private var currentHotkeyModifiers: Int?
@@ -32,9 +34,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let audioCapture = AudioCapture()
     private let transcriber = Transcriber()
+    private let voiceMemoTranscriber = Transcriber()
     private let textInjector = TextInjector()
     private let dictationHistory = DictationHistory.shared
     private let statusViewModel = StatusViewModel()
+    private lazy var voiceMemoManager = VoiceMemoManager(
+        transcriber: voiceMemoTranscriber,
+        modelProvider: { [weak self] in
+            self?.selectedModel ?? "base.en"
+        }
+    )
+    private var transcriptionTask: Task<Void, Never>?
+    private var activeTranscriptionID: UUID?
     private var lastTargetApp: NSRunningApplication?
     private var lastTargetBundleIdentifier: String?
     private var lastVoiceActivityTime: TimeInterval = 0
@@ -142,8 +153,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(
+            NSMenuItem(
+                title: "Main Window...", action: #selector(openMainWindow), keyEquivalent: "0"))
+        menu.addItem(
             NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
+
+        let voiceMemosItem = NSMenuItem(
+            title: "Voice Memos...", action: #selector(openVoiceMemosWindow), keyEquivalent: "m")
+        menu.addItem(voiceMemosItem)
 
         let historyWindowItem = NSMenuItem(
             title: "History...", action: #selector(openHistoryWindow), keyEquivalent: "h")
@@ -257,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         stopHotkey?.keyDownHandler = { [weak self] in
             print("[Whisper] Stop hotkey DOWN - stopping recording")
-            self?.stopRecording()
+            self?.stopAnyRecording()
         }
     }
 
@@ -274,7 +292,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         contentView.wantsLayer = true
         window.contentView = contentView
 
-        let hostingView = FixedSizeHostingView(rootView: StatusView(viewModel: statusViewModel))
+        let hostingView = FixedSizeHostingView(
+            rootView: StatusView(
+                viewModel: statusViewModel,
+                onAbort: { [weak self] in
+                    self?.abortTranscription()
+                })
+        )
         hostingView.frame = contentView.bounds
         hostingView.autoresizingMask = [.width, .height]
         hostingView.translatesAutoresizingMaskIntoConstraints = true
@@ -341,9 +365,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupSettingsWindow() {
-        if settingsWindow != nil { return }
+        setupSettingsWindow(initialTab: .general)
+    }
 
-        let hostingView = NSHostingView(rootView: SettingsView())
+    private func setupSettingsWindow(initialTab: SettingsTab) {
+        if let window = settingsWindow {
+            window.contentView = NSHostingView(rootView: SettingsView(initialTab: initialTab))
+            return
+        }
+
+        let hostingView = NSHostingView(rootView: SettingsView(initialTab: initialTab))
         let windowSize = NSSize(width: 600, height: 500)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
@@ -356,6 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setContentSize(windowSize)
         window.contentMinSize = windowSize
         window.contentMaxSize = windowSize
+        window.isReleasedWhenClosed = false
         window.center()
         settingsWindow = window
     }
@@ -376,8 +408,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setContentSize(windowSize)
         window.contentMinSize = windowSize
         window.contentMaxSize = windowSize
+        window.isReleasedWhenClosed = false
         window.center()
         historyWindow = window
+    }
+
+    private func setupVoiceMemosWindow() {
+        if voiceMemosWindow != nil { return }
+
+        let hostingView = NSHostingView(rootView: VoiceMemosView(manager: voiceMemoManager))
+        let windowSize = NSSize(width: 720, height: 500)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: windowSize),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Voice Memos"
+        window.contentView = hostingView
+        window.setContentSize(windowSize)
+        window.contentMinSize = windowSize
+        window.contentMaxSize = windowSize
+        window.isReleasedWhenClosed = false
+        window.center()
+        voiceMemosWindow = window
+    }
+
+    private func setupMainWindow() {
+        if mainWindow != nil { return }
+
+        let view = MainView(
+            voiceMemoManager: voiceMemoManager,
+            statusViewModel: statusViewModel,
+            startDictation: { [weak self] in self?.startRecording() },
+            stopDictation: { [weak self] in self?.stopRecording() },
+            openSettings: { [weak self] in self?.openSettings() },
+            openHistory: { [weak self] in self?.openHistoryWindow() },
+            openVoiceMemos: { [weak self] in self?.openVoiceMemosWindow() },
+            openVocabulary: { [weak self] in self?.openSettingsTab(.vocabulary) }
+        )
+        let hostingView = NSHostingView(rootView: view)
+        let windowSize = NSSize(width: 760, height: 520)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: windowSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Whisper"
+        window.contentView = hostingView
+        window.setContentSize(windowSize)
+        window.contentMinSize = windowSize
+        window.isReleasedWhenClosed = false
+        window.center()
+        mainWindow = window
     }
 
     private func loadModel() {
@@ -404,6 +488,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !isRecording else {
             print("[Whisper] Cannot record - already recording")
+            return
+        }
+        guard !voiceMemoManager.isRecording else {
+            print("[Whisper] Cannot record - voice memo session active")
             return
         }
 
@@ -450,11 +538,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        Task {
+        let transcriptionID = UUID()
+        activeTranscriptionID = transcriptionID
+        transcriptionTask?.cancel()
+        transcriptionTask = Task { [weak self] in
+            guard let self else { return }
             print("[Whisper] Starting transcription...")
 
             // Transcribe
-            guard let rawText = await transcriber.transcribe(audio) else {
+            guard let payload = await transcriber.transcribe(audio) else {
                 print("[Whisper] Transcription returned nil")
                 await MainActor.run {
                     lastTranscription = "(no speech detected)"
@@ -463,19 +555,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            print("[Whisper] Raw transcription: '\(rawText)'")
+            if Task.isCancelled || activeTranscriptionID != transcriptionID {
+                return
+            }
+
+            print("[Whisper] Raw transcription: '\(payload.text)'")
 
             // Apply learned corrections
-            let finalText = CorrectionEngine.shared.apply(to: rawText)
+            let finalText = CorrectionEngine.shared.apply(to: payload.text)
             print("[Whisper] Final text: '\(finalText)'")
 
             await MainActor.run {
-                self.activateTargetApp()
+                if self.activeTranscriptionID == transcriptionID {
+                    self.activateTargetApp()
+                }
             }
 
             try? await Task.sleep(nanoseconds: 80_000_000)
 
             await MainActor.run { [finalText] in
+                guard self.activeTranscriptionID == transcriptionID, !Task.isCancelled else {
+                    return
+                }
                 if alwaysCopyToClipboard {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(finalText, forType: .string)
@@ -550,10 +651,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 }
 
-                state = .ready
-                updateHistoryMenu()
+                if self.activeTranscriptionID == transcriptionID {
+                    state = .ready
+                    updateHistoryMenu()
+                }
             }
         }
+    }
+
+    private func abortTranscription() {
+        guard case .processing = state else { return }
+        print("[Whisper] Aborting transcription")
+        activeTranscriptionID = nil
+        transcriptionTask?.cancel()
+        transcriptionTask = nil
+        state = .ready
+        statusViewModel.level = 0
     }
 
     private func handleAudioLevel(_ level: Float) {
@@ -729,7 +842,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc private func openSettings() {
-        setupSettingsWindow()
+        setupSettingsWindow(initialTab: .general)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openSettingsTab(_ tab: SettingsTab) {
+        setupSettingsWindow(initialTab: tab)
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -737,6 +856,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openHistoryWindow() {
         setupHistoryWindow()
         historyWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openMainWindow() {
+        setupMainWindow()
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openVoiceMemosWindow() {
+        setupVoiceMemosWindow()
+        voiceMemosWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -757,6 +888,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    private func stopAnyRecording() {
+        if voiceMemoManager.isRecording {
+            voiceMemoManager.stopRecording()
+            return
+        }
+
+        stopRecording()
     }
 }
 

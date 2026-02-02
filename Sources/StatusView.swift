@@ -17,6 +17,7 @@ final class StatusViewModel: ObservableObject {
 /// Minimal floating status indicator
 struct StatusView: View {
     @ObservedObject var viewModel: StatusViewModel
+    let onAbort: (() -> Void)?
     @AppStorage("useCustomWaveColor") private var useCustomWaveColor = false
     @AppStorage("waveColorHex") private var waveColorHex = "#8B5CF6"
 
@@ -51,6 +52,19 @@ struct StatusView: View {
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundColor(.white)  // Always white on dark material
                     .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
+            }
+
+            if case .processing = viewModel.state {
+                Button(action: { onAbort?() }) {
+                    Text("Abort")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.2))
+                        .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel this transcription")
             }
 
             // Show last transcription if available
@@ -222,13 +236,16 @@ enum DictationState: Equatable {
 
 #Preview {
     VStack(spacing: 20) {
-        StatusView(viewModel: StatusViewModel(state: .loading, lastText: ""))
-        StatusView(viewModel: StatusViewModel(state: .ready, lastText: ""))
-        StatusView(viewModel: StatusViewModel(state: .recording, lastText: "", level: 0.6))
-        StatusView(viewModel: StatusViewModel(state: .processing, lastText: ""))
+        StatusView(viewModel: StatusViewModel(state: .loading, lastText: ""), onAbort: nil)
+        StatusView(viewModel: StatusViewModel(state: .ready, lastText: ""), onAbort: nil)
+        StatusView(
+            viewModel: StatusViewModel(state: .recording, lastText: "", level: 0.6), onAbort: nil)
+        StatusView(viewModel: StatusViewModel(state: .processing, lastText: ""), onAbort: nil)
         StatusView(
             viewModel: StatusViewModel(
-                state: .ready, lastText: "This is some transcribed text that was typed"))
+                state: .ready, lastText: "This is some transcribed text that was typed"),
+            onAbort: nil
+        )
     }
     .padding()
 }

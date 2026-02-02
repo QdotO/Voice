@@ -21,6 +21,8 @@ struct SettingsView: View {
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
     @AppStorage("recordingMode") private var recordingMode = RecordingMode.hold.rawValue
+    @AppStorage("useCopilotAnalysis") private var useCopilotAnalysis = false
+    @AppStorage("copilotBridgeURL") private var copilotBridgeURL = "http://127.0.0.1:32190/analyze"
 
     @State private var selectedCategory: String?
     @State private var searchText = ""
@@ -30,9 +32,13 @@ struct SettingsView: View {
     @State private var requestAccessibilityToggle = false
 
     private let vocab = Vocabulary.shared
-    @State private var selectedTab: SettingsTab = .general
+    @State private var selectedTab: SettingsTab
     @State private var isRecordingShortcut = false
     @State private var isRecordingStopShortcut = false
+
+    init(initialTab: SettingsTab = .general) {
+        _selectedTab = State(initialValue: initialTab)
+    }
 
     var body: some View {
         ZStack {
@@ -198,6 +204,18 @@ struct SettingsView: View {
                 Text("Paste is faster for long text but briefly uses the clipboard.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            Section("AI Analysis") {
+                Toggle("Use Copilot analysis", isOn: $useCopilotAnalysis)
+
+                if useCopilotAnalysis {
+                    TextField("Copilot bridge URL", text: $copilotBridgeURL)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Requires a local Copilot SDK bridge service.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
 
             Section("Appearance") {
@@ -603,7 +621,7 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsTab: String, CaseIterable, Identifiable {
+enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case model
     case vocabulary

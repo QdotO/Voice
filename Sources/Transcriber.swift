@@ -35,7 +35,7 @@ final class Transcriber {
     }
 
     /// Transcribe audio samples
-    func transcribe(_ audio: [Float]) async -> String? {
+    func transcribe(_ audio: [Float]) async -> TranscriptionPayload? {
         guard let whisperKit = whisperKit else {
             onError?("Model not loaded")
             return nil
@@ -61,7 +61,8 @@ final class Transcriber {
                 usePrefillPrompt: false,  // Disabled - can cause issues with nil promptTokens
                 usePrefillCache: false,
                 skipSpecialTokens: true,
-                withoutTimestamps: true,
+                withoutTimestamps: false,
+                wordTimestamps: true,
                 clipTimestamps: [],
                 promptTokens: nil,
                 prefixTokens: nil,
@@ -91,7 +92,19 @@ final class Transcriber {
 
             // Clean up the transcription
             let text = cleanTranscription(result.text)
-            return text.isEmpty ? nil : text
+            guard !text.isEmpty else { return nil }
+
+            let words = result.allWords
+                .map { word in
+                    TranscriptWord(
+                        word: word.word.trimmingCharacters(in: .whitespacesAndNewlines),
+                        start: Double(word.start),
+                        end: Double(word.end)
+                    )
+                }
+                .filter { !$0.word.isEmpty }
+
+            return TranscriptionPayload(text: text, words: words)
         } catch {
             onError?("Transcription failed: \(error.localizedDescription)")
             return nil
@@ -132,4 +145,9 @@ final class Transcriber {
 
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+struct TranscriptionPayload {
+    let text: String
+    let words: [TranscriptWord]
 }

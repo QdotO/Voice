@@ -11,16 +11,21 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
-        .package(url: "https://github.com/soffes/HotKey.git", from: "0.2.0")
+        .package(url: "https://github.com/soffes/HotKey.git", from: "0.2.0"),
     ],
     targets: [
         .executableTarget(
             name: "Whisper",
             dependencies: [
                 "WhisperKit",
-                "HotKey"
+                "HotKey",
             ],
             path: "Sources"
-        )
+        ),
+        .testTarget(
+            name: "WhisperTests",
+            dependencies: ["Whisper"],
+            path: "Tests"
+        ),
     ]
 )
