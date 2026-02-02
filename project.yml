@@ -21,6 +21,11 @@ targets:
       - iOS/App/Assets.xcassets
     info:
       path: iOS/App/Info.plist
+      properties:
+        CFBundleDisplayName: Whisper
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        NSMicrophoneUsageDescription: Whisper needs microphone access to capture dictation.
     entitlements:
       path: iOS/App/WhisperiOS.entitlements
     dependencies:
@@ -31,6 +36,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.ios
+        TARGETED_DEVICE_FAMILY: 1
   WhisperKeyboard:
     type: app-extension
     platform: iOS
@@ -38,6 +44,16 @@ targets:
       - iOS/Keyboard
     info:
       path: iOS/Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Whisper Keyboard
+        NSMicrophoneUsageDescription: Whisper Keyboard needs microphone access to capture dictation.
+        NSExtension:
+          NSExtensionAttributes:
+            IsASCIICapable: true
+            PrimaryLanguage: en-US
+            RequestsOpenAccess: false
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
     entitlements:
       path: iOS/Keyboard/WhisperKeyboard.entitlements
     dependencies:
@@ -45,4 +61,5 @@ targets:
         product: WhisperShared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.ios.keyboard
+        TARGETED_DEVICE_FAMILY: 1

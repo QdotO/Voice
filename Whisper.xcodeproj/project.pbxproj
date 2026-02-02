@@ -263,9 +263,9 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.keyboard;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.ios.keyboard;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -279,9 +279,9 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.keyboard;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.ios.keyboard;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -298,7 +298,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.ios;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -315,7 +315,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.quincy.whisper.ios;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
