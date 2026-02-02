@@ -1,12 +1,12 @@
 import Foundation
 
-struct ThemesAnalysis: Equatable {
-    let title: String
-    let bullets: [String]
-    let confidence: Double
-    let source: String
+public struct ThemesAnalysis: Equatable {
+    public let title: String
+    public let bullets: [String]
+    public let confidence: Double
+    public let source: String
 
-    static let placeholder = ThemesAnalysis(
+    public static let placeholder = ThemesAnalysis(
         title: "No analysis yet",
         bullets: ["Connect analysis to see themes."],
         confidence: 0,
@@ -14,19 +14,19 @@ struct ThemesAnalysis: Equatable {
     )
 }
 
-protocol ThemesAnalyzing {
+public protocol ThemesAnalyzing {
     func analyze(texts: [String]) async throws -> ThemesAnalysis
 }
 
-final class CopilotBridgeClient: ThemesAnalyzing {
+public final class CopilotBridgeClient: ThemesAnalyzing {
     private let endpoint: URL
 
-    init?(endpoint: String) {
+    public init?(endpoint: String) {
         guard let url = URL(string: endpoint) else { return nil }
         self.endpoint = url
     }
 
-    func analyze(texts: [String]) async throws -> ThemesAnalysis {
+    public func analyze(texts: [String]) async throws -> ThemesAnalysis {
         let requestBody = CopilotBridgeRequest(texts: texts)
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -67,7 +67,7 @@ struct CopilotBridgeResponse: Codable {
     let error: String?
 }
 
-struct KeywordThemesAnalyzer: ThemesAnalyzing {
+public struct KeywordThemesAnalyzer: ThemesAnalyzing {
     private let stopwords: Set<String> = [
         "the", "and", "that", "this", "with", "from", "they", "their", "there",
         "about", "would", "could", "should", "what", "when", "where", "which",
@@ -77,7 +77,7 @@ struct KeywordThemesAnalyzer: ThemesAnalyzing {
         "you", "are", "for", "not", "but", "can", "did", "does", "its", "was",
     ]
 
-    func analyze(texts: [String]) async throws -> ThemesAnalysis {
+    public func analyze(texts: [String]) async throws -> ThemesAnalysis {
         let combined = texts.joined(separator: " ")
         let tokens =
             combined
@@ -110,8 +110,8 @@ struct KeywordThemesAnalyzer: ThemesAnalyzing {
     }
 }
 
-struct ThemesAnalyzer {
-    static func analyze(
+public struct ThemesAnalyzer {
+    public static func analyze(
         texts: [String],
         useCopilot: Bool,
         copilotEndpoint: String

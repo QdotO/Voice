@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 /// Captures microphone audio and converts to 16kHz mono for Whisper
-final class AudioCapture {
+public final class AudioCapture {
     private let engine = AVAudioEngine()
     private var isCapturing = false
     private var audioBuffer: [Float] = []
@@ -12,13 +12,13 @@ final class AudioCapture {
     // Whisper requires 16kHz mono audio
     private let targetSampleRate: Double = 16000
 
-    var onError: ((String) -> Void)?
-    var onLevel: ((Float) -> Void)?
+    public var onError: ((String) -> Void)?
+    public var onLevel: ((Float) -> Void)?
 
-    init() {}
+    public init() {}
 
     /// Check and request microphone permission
-    func requestPermission() async -> Bool {
+    public func requestPermission() async -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
 
         switch status {
@@ -34,7 +34,7 @@ final class AudioCapture {
     }
 
     /// Start capturing audio
-    func start() throws {
+    public func start() throws {
         guard !isCapturing else { return }
 
         let inputNode = engine.inputNode
@@ -78,7 +78,7 @@ final class AudioCapture {
     }
 
     /// Stop capturing and return all collected audio
-    func stop() -> [Float] {
+    public func stop() -> [Float] {
         guard isCapturing else { return [] }
 
         engine.inputNode.removeTap(onBus: 0)
@@ -170,12 +170,12 @@ final class AudioCapture {
     }
 }
 
-enum AudioError: Error, LocalizedError {
+public enum AudioError: Error, LocalizedError {
     case formatCreationFailed
     case converterCreationFailed
     case invalidInputFormat
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .formatCreationFailed:
             return "Failed to create audio format"

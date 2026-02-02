@@ -1,16 +1,18 @@
 import AVFoundation
-import AppKit
 import Foundation
+#if os(macOS)
+import AppKit
 import UniformTypeIdentifiers
+#endif
 
-final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
-    @Published private(set) var memos: [VoiceMemo] = []
-    @Published private(set) var isRecording = false
-    @Published private(set) var currentDuration: TimeInterval = 0
-    @Published private(set) var currentlyPlayingID: UUID?
-    @Published private(set) var recordingLevel: Float = 0
-    @Published private(set) var playbackTime: TimeInterval = 0
-    @Published private(set) var playbackDuration: TimeInterval = 0
+public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published public private(set) var memos: [VoiceMemo] = []
+    @Published public private(set) var isRecording = false
+    @Published public private(set) var currentDuration: TimeInterval = 0
+    @Published public private(set) var currentlyPlayingID: UUID?
+    @Published public private(set) var recordingLevel: Float = 0
+    @Published public private(set) var playbackTime: TimeInterval = 0
+    @Published public private(set) var playbackDuration: TimeInterval = 0
 
     private let store: VoiceMemoStore
     private let transcriber: Transcriber
@@ -22,7 +24,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
     private var currentMemoID: UUID?
     private var currentFileURL: URL?
 
-    init(
+    public init(
         transcriber: Transcriber,
         modelProvider: @escaping () -> String,
         store: VoiceMemoStore = .shared
@@ -45,7 +47,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         NotificationCenter.default.removeObserver(self)
     }
 
-    func startRecording() {
+    public func startRecording() {
         guard !isRecording else { return }
 
         let id = UUID()
@@ -78,7 +80,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func stopRecording() {
+    public func stopRecording() {
         guard isRecording else { return }
 
         timer?.invalidate()
@@ -125,7 +127,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func togglePlayback(for memo: VoiceMemo) {
+    public func togglePlayback(for memo: VoiceMemo) {
         if currentlyPlayingID == memo.id {
             stopPlayback()
             return
@@ -148,14 +150,14 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func seek(to time: TimeInterval) {
+    public func seek(to time: TimeInterval) {
         guard let player else { return }
         let clamped = max(0, min(time, player.duration))
         player.currentTime = clamped
         playbackTime = clamped
     }
 
-    func deleteMemo(_ memo: VoiceMemo) {
+    public func deleteMemo(_ memo: VoiceMemo) {
         if currentlyPlayingID == memo.id {
             stopPlayback()
         }
@@ -166,7 +168,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         memos = store.allMemos()
     }
 
-    func renameMemo(_ memo: VoiceMemo, title: String) {
+    public func renameMemo(_ memo: VoiceMemo, title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         store.update(id: memo.id) { updated in
@@ -175,7 +177,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         memos = store.allMemos()
     }
 
-    func toggleAutoTranscribe(_ memo: VoiceMemo) {
+    public func toggleAutoTranscribe(_ memo: VoiceMemo) {
         store.update(id: memo.id) { updated in
             updated.autoTranscribe.toggle()
             if !updated.autoTranscribe {
@@ -195,7 +197,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func retranscribe(_ memo: VoiceMemo) {
+    public func retranscribe(_ memo: VoiceMemo) {
         guard !memo.isTranscribing else { return }
         store.update(id: memo.id) { updated in
             updated.isTranscribing = true
@@ -209,7 +211,7 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func retranscribeMissingTimings() {
+    public func retranscribeMissingTimings() {
         let targets = memos.filter {
             !$0.isTranscribing && ($0.transcriptWords?.isEmpty ?? true)
         }
@@ -231,7 +233,8 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         }
     }
 
-    func exportMemo(_ memo: VoiceMemo) {
+    public func exportMemo(_ memo: VoiceMemo) {
+#if os(macOS)
         let sourceURL = store.memoURL(for: memo)
         let panel = NSSavePanel()
         panel.nameFieldStringValue = sourceURL.lastPathComponent
@@ -242,13 +245,16 @@ final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate 
         if panel.runModal() == .OK, let destination = panel.url {
             try? FileManager.default.copyItem(at: sourceURL, to: destination)
         }
+#else
+        _ = memo
+#endif
     }
 
-    func audioURL(for memo: VoiceMemo) -> URL {
+    public func audioURL(for memo: VoiceMemo) -> URL {
         store.memoURL(for: memo)
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         stopPlayback()
     }
 

@@ -2,23 +2,23 @@ import Foundation
 import WhisperKit
 
 /// Handles speech-to-text transcription using WhisperKit
-final class Transcriber {
+public final class Transcriber {
     private var whisperKit: WhisperKit?
     private var isLoading = false
 
     /// Currently loaded model name
-    private(set) var modelName: String?
+    public private(set) var modelName: String?
 
     /// Vocabulary prompt for context
-    var vocabularyPrompt: String = ""
+    public var vocabularyPrompt: String = ""
 
-    var onModelLoaded: ((Bool, String?) -> Void)?
-    var onError: ((String) -> Void)?
+    public var onModelLoaded: ((Bool, String?) -> Void)?
+    public var onError: ((String) -> Void)?
 
-    init() {}
+    public init() {}
 
     /// Load a Whisper model
-    func loadModel(_ model: String = "base.en") async {
+    public func loadModel(_ model: String = "base.en") async {
         guard !isLoading else { return }
         isLoading = true
 
@@ -35,7 +35,7 @@ final class Transcriber {
     }
 
     /// Transcribe audio samples
-    func transcribe(_ audio: [Float]) async -> TranscriptionPayload? {
+    public func transcribe(_ audio: [Float]) async -> TranscriptionPayload? {
         guard let whisperKit = whisperKit else {
             onError?("Model not loaded")
             return nil
@@ -147,7 +147,12 @@ final class Transcriber {
     }
 }
 
-struct TranscriptionPayload {
-    let text: String
-    let words: [TranscriptWord]
+public struct TranscriptionPayload {
+    public let text: String
+    public let words: [TranscriptWord]
+
+    public init(text: String, words: [TranscriptWord]) {
+        self.text = text
+        self.words = words
+    }
 }

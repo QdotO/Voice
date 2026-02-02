@@ -1,6 +1,7 @@
 import AppKit
 import HotKey
 import SwiftUI
+import WhisperShared
 
 @main
 struct WhisperApp: App {

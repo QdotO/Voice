@@ -1,14 +1,14 @@
 import Foundation
 
-struct DictationHistoryEntry: Codable, Identifiable, Equatable {
-    let id: UUID
-    let text: String
-    let timestamp: Date
-    let durationSeconds: Double
-    let model: String
-    let outputMethod: String
+public struct DictationHistoryEntry: Codable, Identifiable, Equatable {
+    public let id: UUID
+    public let text: String
+    public let timestamp: Date
+    public let durationSeconds: Double
+    public let model: String
+    public let outputMethod: String
 
-    init(text: String, durationSeconds: Double, model: String, outputMethod: String) {
+    public init(text: String, durationSeconds: Double, model: String, outputMethod: String) {
         self.id = UUID()
         self.text = text
         self.timestamp = Date()
@@ -18,29 +18,27 @@ struct DictationHistoryEntry: Codable, Identifiable, Equatable {
     }
 }
 
-final class DictationHistory {
-    static let shared = DictationHistory()
-    static let didChangeNotification = Notification.Name("DictationHistoryDidChange")
+public final class DictationHistory {
+    public static let shared = DictationHistory()
+    public static let didChangeNotification = Notification.Name("DictationHistoryDidChange")
 
     private var entries: [DictationHistoryEntry] = []
     private let fileURL: URL
     private let maxEntries = 100
 
     private init() {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!
-        let appDir = appSupport.appendingPathComponent("Whisper", isDirectory: true)
+        let baseURL = SharedStorage.baseDirectory()
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
         fileURL = appDir.appendingPathComponent("dictation-history.json")
         load()
     }
 
-    func allEntries() -> [DictationHistoryEntry] {
+    public func allEntries() -> [DictationHistoryEntry] {
         entries.sorted { $0.timestamp > $1.timestamp }
     }
 
-    func addEntry(text: String, durationSeconds: Double, model: String, outputMethod: String) {
+    public func addEntry(text: String, durationSeconds: Double, model: String, outputMethod: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -59,16 +57,16 @@ final class DictationHistory {
         save()
     }
 
-    func entry(id: UUID) -> DictationHistoryEntry? {
+    public func entry(id: UUID) -> DictationHistoryEntry? {
         entries.first { $0.id == id }
     }
 
-    func remove(id: UUID) {
+    public func remove(id: UUID) {
         entries.removeAll { $0.id == id }
         save()
     }
 
-    func clear() {
+    public func clear() {
         entries.removeAll()
         save()
     }

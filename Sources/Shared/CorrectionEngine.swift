@@ -1,8 +1,8 @@
 import Foundation
 
 /// Tracks corrections and learns from user edits
-final class CorrectionEngine {
-    static let shared = CorrectionEngine()
+public final class CorrectionEngine {
+    public static let shared = CorrectionEngine()
 
     private var corrections: [Correction] = []
     private let fileURL: URL
@@ -23,8 +23,8 @@ final class CorrectionEngine {
     }
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appDir = appSupport.appendingPathComponent("Whisper", isDirectory: true)
+        let baseURL = SharedStorage.baseDirectory()
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
         fileURL = appDir.appendingPathComponent("corrections.json")
         load()
@@ -33,7 +33,7 @@ final class CorrectionEngine {
     // MARK: - Learning
 
     /// Learn from a user correction
-    func learn(original: String, corrected: String) {
+    public func learn(original: String, corrected: String) {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let corrected = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -67,7 +67,7 @@ final class CorrectionEngine {
     }
 
     /// Apply learned corrections to transcribed text
-    func apply(to text: String) -> String {
+    public func apply(to text: String) -> String {
         var result = text
 
         for correction in corrections {
@@ -86,7 +86,7 @@ final class CorrectionEngine {
     }
 
     /// Analyze differences between original and corrected text
-    func extractDifferences(original: String, corrected: String) -> [(original: String, corrected: String)] {
+    public func extractDifferences(original: String, corrected: String) -> [(original: String, corrected: String)] {
         let originalWords = tokenize(original)
         let correctedWords = tokenize(corrected)
 
@@ -112,7 +112,7 @@ final class CorrectionEngine {
     // MARK: - Suggestions
 
     /// Extract potential vocabulary terms from corrected text
-    func suggestNewTerms(from correctedText: String) -> [String] {
+    public func suggestNewTerms(from correctedText: String) -> [String] {
         let words = tokenize(correctedText)
         let vocab = Vocabulary.shared
 

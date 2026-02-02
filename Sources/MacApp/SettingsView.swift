@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import HotKey
 import SwiftUI
+import WhisperShared
 
 struct SettingsView: View {
     @AppStorage("selectedModel") private var selectedModel = "base.en"

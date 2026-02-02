@@ -1,13 +1,13 @@
 import Foundation
 
 /// A vocabulary term with metadata
-struct VocabTerm: Codable, Identifiable, Hashable {
-    let id: UUID
-    var term: String
-    var category: String
-    var enabled: Bool
+public struct VocabTerm: Codable, Identifiable, Hashable {
+    public let id: UUID
+    public var term: String
+    public var category: String
+    public var enabled: Bool
 
-    init(term: String, category: String, enabled: Bool = true) {
+    public init(term: String, category: String, enabled: Bool = true) {
         self.id = UUID()
         self.term = term
         self.category = category
@@ -16,14 +16,14 @@ struct VocabTerm: Codable, Identifiable, Hashable {
 }
 
 /// Manages custom vocabulary for transcription context
-final class Vocabulary {
-    static let shared = Vocabulary()
+public final class Vocabulary {
+    public static let shared = Vocabulary()
 
     private var terms: [VocabTerm] = []
     private let fileURL: URL
 
     /// All defined categories
-    static let categories = [
+    public static let categories = [
         "Software Engineering",
         "JavaScript/TypeScript",
         "Frontend",
@@ -40,8 +40,8 @@ final class Vocabulary {
     ]
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appDir = appSupport.appendingPathComponent("Whisper", isDirectory: true)
+        let baseURL = SharedStorage.baseDirectory()
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
 
         // Create directory if needed
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
@@ -59,20 +59,20 @@ final class Vocabulary {
     // MARK: - Public API
 
     /// Get all terms
-    var allTerms: [VocabTerm] { terms }
+    public var allTerms: [VocabTerm] { terms }
 
     /// Get terms by category
-    func terms(in category: String) -> [VocabTerm] {
+    public func terms(in category: String) -> [VocabTerm] {
         terms.filter { $0.category == category }
     }
 
     /// Get enabled terms only
-    var enabledTerms: [VocabTerm] {
+    public var enabledTerms: [VocabTerm] {
         terms.filter { $0.enabled }
     }
 
     /// Generate prompt for Whisper context
-    func generatePrompt() -> String {
+    public func generatePrompt() -> String {
         let enabled = enabledTerms.map { $0.term }
         guard !enabled.isEmpty else { return "" }
 
@@ -83,7 +83,7 @@ final class Vocabulary {
     }
 
     /// Add a new term
-    func add(_ term: String, category: String) {
+    public func add(_ term: String, category: String) {
         // Avoid duplicates
         guard !terms.contains(where: { $0.term.lowercased() == term.lowercased() }) else { return }
         terms.append(VocabTerm(term: term, category: category))
@@ -91,13 +91,13 @@ final class Vocabulary {
     }
 
     /// Remove a term
-    func remove(_ term: VocabTerm) {
+    public func remove(_ term: VocabTerm) {
         terms.removeAll { $0.id == term.id }
         save()
     }
 
     /// Toggle a term's enabled state
-    func toggle(_ term: VocabTerm) {
+    public func toggle(_ term: VocabTerm) {
         if let index = terms.firstIndex(where: { $0.id == term.id }) {
             terms[index].enabled.toggle()
             save()
@@ -105,7 +105,7 @@ final class Vocabulary {
     }
 
     /// Enable/disable entire category
-    func setCategory(_ category: String, enabled: Bool) {
+    public func setCategory(_ category: String, enabled: Bool) {
         for i in terms.indices where terms[i].category == category {
             terms[i].enabled = enabled
         }
@@ -113,7 +113,7 @@ final class Vocabulary {
     }
 
     /// Reset to default presets
-    func reset() {
+    public func reset() {
         terms.removeAll()
         loadAllPresets()
         save()

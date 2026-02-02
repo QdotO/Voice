@@ -1,8 +1,8 @@
 import AVFoundation
 import Foundation
 
-enum AudioFileLoader {
-    static func loadPCM16kMono(from url: URL) throws -> [Float] {
+public enum AudioFileLoader {
+    public static func loadPCM16kMono(from url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
         let inputFormat = file.processingFormat
 

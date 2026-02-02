@@ -1,4 +1,5 @@
 import SwiftUI
+import WhisperShared
 
 struct VoiceMemosView: View {
     @ObservedObject var manager: VoiceMemoManager

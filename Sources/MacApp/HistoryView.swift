@@ -1,4 +1,5 @@
 import SwiftUI
+import WhisperShared
 
 struct HistoryView: View {
     @State private var entries: [DictationHistoryEntry] = []

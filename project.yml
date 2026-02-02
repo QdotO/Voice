@@ -1,0 +1,48 @@
+name: Whisper
+options:
+  bundleIdPrefix: com.quincy
+  deploymentTarget:
+    iOS: 26.0
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: 1.0
+    CURRENT_PROJECT_VERSION: 1
+packages:
+  Whisper:
+    path: .
+targets:
+  WhisperiOS:
+    type: application
+    platform: iOS
+    sources:
+      - iOS/App
+    resources:
+      - iOS/App/Assets.xcassets
+    info:
+      path: iOS/App/Info.plist
+    entitlements:
+      path: iOS/App/WhisperiOS.entitlements
+    dependencies:
+      - package: Whisper
+        product: WhisperShared
+      - target: WhisperKeyboard
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.ios
+  WhisperKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - iOS/Keyboard
+    info:
+      path: iOS/Keyboard/Info.plist
+    entitlements:
+      path: iOS/Keyboard/WhisperKeyboard.entitlements
+    dependencies:
+      - package: Whisper
+        product: WhisperShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.keyboard

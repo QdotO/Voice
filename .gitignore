@@ -10,6 +10,7 @@ Package.resolved.bak
 # Xcode
 DerivedData/
 *.xcodeproj/
+!Whisper.xcodeproj/
 *.xcworkspace/
 xcuserdata/
 *.xcuserstate
@@ -25,3 +26,4 @@ Logs/
 .vscode/
 .idea/
 tools/copilot-bridge/node_modules/*
+build/*

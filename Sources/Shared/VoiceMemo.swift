@@ -1,17 +1,17 @@
 import Foundation
 
-struct VoiceMemo: Codable, Identifiable, Equatable {
-    let id: UUID
-    var title: String
-    let createdAt: Date
-    var durationSeconds: Double
-    let audioFileName: String
-    var transcript: String?
-    var transcriptWords: [TranscriptWord]?
-    var isTranscribing: Bool
-    var autoTranscribe: Bool
+public struct VoiceMemo: Codable, Identifiable, Equatable {
+    public let id: UUID
+    public var title: String
+    public let createdAt: Date
+    public var durationSeconds: Double
+    public let audioFileName: String
+    public var transcript: String?
+    public var transcriptWords: [TranscriptWord]?
+    public var isTranscribing: Bool
+    public var autoTranscribe: Bool
 
-    init(
+    public init(
         id: UUID = UUID(),
         title: String,
         createdAt: Date = Date(),
@@ -45,7 +45,7 @@ struct VoiceMemo: Codable, Identifiable, Equatable {
         case autoTranscribe
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
@@ -59,7 +59,7 @@ struct VoiceMemo: Codable, Identifiable, Equatable {
         autoTranscribe = try container.decodeIfPresent(Bool.self, forKey: .autoTranscribe) ?? true
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
@@ -73,8 +73,14 @@ struct VoiceMemo: Codable, Identifiable, Equatable {
     }
 }
 
-struct TranscriptWord: Codable, Hashable {
-    let word: String
-    let start: Double
-    let end: Double
+public struct TranscriptWord: Codable, Hashable {
+    public let word: String
+    public let start: Double
+    public let end: Double
+
+    public init(word: String, start: Double, end: Double) {
+        self.word = word
+        self.start = start
+        self.end = end
+    }
 }

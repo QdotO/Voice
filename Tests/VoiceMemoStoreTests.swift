@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Whisper
+@testable import WhisperShared
 
 final class VoiceMemoStoreTests: XCTestCase {
     func testAddUpdateRemoveMemo() throws {
