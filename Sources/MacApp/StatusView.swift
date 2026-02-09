@@ -18,181 +18,255 @@ final class StatusViewModel: ObservableObject {
 struct StatusView: View {
     @ObservedObject var viewModel: StatusViewModel
     let onAbort: (() -> Void)?
-    @AppStorage("useCustomWaveColor") private var useCustomWaveColor = false
-    @AppStorage("waveColorHex") private var waveColorHex = "#8B5CF6"
 
     var body: some View {
-        HStack(spacing: 14) {
-            // Status indicator
-            ZStack {
-                Circle()
-                    .fill(viewModel.state.color)
-                    .frame(width: 10, height: 10)
-
-                if viewModel.state.isRecording {
-                    Circle()
-                        .stroke(viewModel.state.color.opacity(0.5), lineWidth: 2)
-                        .frame(width: 16, height: 16)
-                        .opacity(0.8)
-                }
-            }
-            .shadow(color: viewModel.state.color.opacity(0.5), radius: 5, x: 0, y: 0)
-
-            if viewModel.state.isRecording {
-                EqualizerView(
-                    level: viewModel.level,
-                    useCustomColor: useCustomWaveColor,
-                    colorHex: waveColorHex
-                )
-            }
-
-            // Status text
-            if !viewModel.state.isRecording {
-                Text(viewModel.state.label)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundColor(.white)  // Always white on dark material
-                    .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
-            }
-
-            if case .processing = viewModel.state {
-                Button(action: { onAbort?() }) {
-                    Text("Abort")
-                        .font(.system(size: 11, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.2))
-                        .cornerRadius(8)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel this transcription")
-            }
-
-            // Show last transcription if available
-            if !viewModel.lastText.isEmpty && viewModel.state.isReady {
-                Text(
-                    "• \(viewModel.lastText.prefix(30))\(viewModel.lastText.count > 30 ? "..." : "")"
-                )
-                .font(.system(size: 12, design: .rounded))
-                .foregroundColor(.white.opacity(0.7))
-                .lineLimit(1)
-            }
-
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                colors: [.white.opacity(0.2), .white.opacity(0.05)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
-                )
-                .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
+        DynamicIslandView(
+            state: viewModel.state,
+            level: viewModel.level,
+            lastText: viewModel.lastText,
+            onAbort: onAbort
         )
     }
 }
 
-private struct EqualizerView: View {
+// MARK: - Dynamic Dynamic Island
+
+private struct DynamicIslandView: View {
+    let state: DictationState
     let level: Float
-    let useCustomColor: Bool
-    let colorHex: String
+    let lastText: String
+    let onAbort: (() -> Void)?
 
-    private struct BarConfig {
-        let phase: Double
-        let speed: Double
-        let scale: CGFloat
-    }
-
-    private let bars: [BarConfig] = [
-        BarConfig(phase: 0.0, speed: 3.2, scale: 0.7),
-        BarConfig(phase: 1.3, speed: 3.8, scale: 0.9),
-        BarConfig(phase: 2.1, speed: 4.1, scale: 1.2),
-        BarConfig(phase: 3.4, speed: 3.5, scale: 1.0),
-        BarConfig(phase: 4.2, speed: 3.9, scale: 0.85),
-        BarConfig(phase: 5.1, speed: 4.4, scale: 1.1),
-        BarConfig(phase: 6.0, speed: 3.6, scale: 0.8),
-    ]
+    @State private var isAnimating = false
 
     var body: some View {
-        TimelineView(.animation) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 3) {
-                ForEach(0..<bars.count, id: \.self) { index in
-                    bar(config: bars[index], time: time, index: index)
+        HStack(spacing: 0) {
+            // State Icon / Indicator
+            ZStack {
+                if state.isRecording {
+                    // Recording Indicator
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 12, height: 12)
+                        .opacity(isAnimating ? 1.0 : 0.5)
+                        .animation(
+                            .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                            value: isAnimating
+                        )
+                        .onAppear { isAnimating = true }
+                } else if case .processing = state {
+                    // Processing Spinner
+                    ProgressView()
+                        .controlSize(.small)
+                        .colorScheme(.dark)
+                        .scaleEffect(0.8)
+                } else {
+                    // Ready/Idle State
+                    Image(systemName: stateIconName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(stateColor)
                 }
             }
+            .frame(width: 24, height: 24)
+            .padding(.leading, 12)
+
+            // Dynamic Content
+            dynamicContent
+                .transition(.opacity.combined(with: .scale))
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: 44)
+        .frame(minWidth: state.isRecording ? 180 : 140, maxWidth: state.isRecording ? 180 : 320)
+        .background(
+            Capsule()
+                .fill(Color.black)
+                .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
+        )
+        .overlay(
+            Capsule()
+                .stroke(
+                    LinearGradient(
+                        colors: borderColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: state.isRecording ? 1.0 + CGFloat(level * 2.5) : 1.5
+                )
+                .opacity(state.isRecording ? 0.6 + Double(level * 0.4) : 0.3)
+                .animation(.linear(duration: 0.1), value: level)
+        )
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: state)
+    }
+
+    @ViewBuilder
+    private var dynamicContent: some View {
+        if state.isRecording {
+            IslandWaveformView(level: level)
+                .frame(width: 120, height: 24)
+                .padding(.horizontal, 8)
+        } else if case .processing = state {
+            HStack(spacing: 8) {
+                Text("Processing...")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.white)
+
+                if let onAbort = onAbort {
+                    Button(action: onAbort) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8)
+        } else {
+            HStack(spacing: 6) {
+                Text(state.label)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(.white)
+
+                if !lastText.isEmpty && state.isReady {
+                    Text("•")
+                        .foregroundColor(.gray)
+                    Text(lastText)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(.white.opacity(0.7))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 8)
         }
     }
 
-    private func bar(config: BarConfig, time: TimeInterval, index: Int) -> some View {
-        let normalized = Double(min(max(level, 0.02), 1.0))
-        let wave = 0.35 + 0.65 * (sin(time * config.speed + config.phase) * 0.5 + 0.5)
-        let amplitude = (20 * wave + 10) * normalized
-        let height = CGFloat(6 + amplitude * Double(config.scale))
-        let opacity = 0.6 + 0.4 * wave
-        let tintShift = Double(index) / Double(max(bars.count - 1, 1))
+    private var stateIconName: String {
+        switch state {
+        case .loading: return "arrow.down.circle"
+        case .ready: return "mic.fill"
+        case .recording: return "waveform"
+        case .processing: return "gear"
+        case .error: return "exclamationmark.triangle.fill"
+        }
+    }
 
-        // If not custom, use our "Nebula" gradient logic by default
-        let baseColor = Color(hex: colorHex) ?? Color.purple
-        let topColor =
-            useCustomColor
-            ? baseColor.lighter(by: 0.18 + tintShift * 0.12)
-            : Color(hue: 0.7 - (tintShift * 0.1), saturation: 0.8, brightness: 1.0)  // Violet -> Blue
+    private var stateColor: Color {
+        switch state {
+        case .loading: return .orange
+        case .ready: return .white
+        case .recording: return .red
+        case .processing: return .blue
+        case .error: return .red
+        }
+    }
 
-        let bottomColor =
-            useCustomColor
-            ? baseColor.darker(by: 0.12 + tintShift * 0.08)
-            : Color(hue: 0.8 - (tintShift * 0.15), saturation: 1.0, brightness: 0.8)  // Purple -> Dark Blue
-
-        return Capsule()
-            .fill(
-                LinearGradient(
-                    colors: [topColor.opacity(opacity), bottomColor.opacity(opacity)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .frame(width: 4, height: height)
-            .shadow(color: bottomColor.opacity(0.4), radius: 4, y: 1)
+    private var borderColors: [Color] {
+        if state.isRecording || state == .processing {
+            // Golden Hour Scheme: Orange -> Yellow
+            return [
+                Color(red: 1.0, green: 0.27, blue: 0.0), Color(red: 1.0, green: 0.84, blue: 0.0),
+            ]
+        } else if case .error = state {
+            return [.red, .orange]
+        }
+        return [.white.opacity(0.15), .white.opacity(0.05)]
     }
 }
 
-extension Color {
-    fileprivate func lighter(by amount: Double) -> Color {
-        adjustBrightness(by: abs(amount))
+private struct IslandWaveformView: View {
+    let level: Float
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            ChartDataWrapper(targetLevel: level, date: context.date)
+        }
+    }
+}
+
+private struct ChartDataWrapper: View {
+    let targetLevel: Float
+    let date: Date
+
+    @State private var currentLevel: Float = 0.0
+    private let barCount = 12
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<barCount, id: \.self) { index in
+                WaveformBar(
+                    index: index,
+                    count: barCount,
+                    level: currentLevel,
+                    date: date
+                )
+            }
+        }
+        .onChange(of: date) { oldDate, newDate in
+            // Frame-by-frame smoothing
+            // If target changes slowly (10Hz), this smoothes the 60Hz tween
+            let diff = targetLevel - currentLevel
+            // Adjust factor: 0.1 is smooth, 0.3 is snappy. 0.2 is good.
+            currentLevel += diff * 0.2
+        }
+    }
+}
+
+private struct WaveformBar: View {
+    let index: Int
+    let count: Int
+    let level: Float
+    let date: Date
+
+    var body: some View {
+        Capsule()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 1.0, green: 0.27, blue: 0.0),  // Burnt Orange
+                        Color(red: 1.0, green: 0.84, blue: 0.0),  // Sunny Yellow
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+            )
+            .frame(width: 4, height: height)
     }
 
-    fileprivate func darker(by amount: Double) -> Color {
-        adjustBrightness(by: -abs(amount))
-    }
+    private var height: CGFloat {
+        // Logarithmic-ish scaling for audio (makes quiet sounds visible, louds don't clip too hard)
+        let rawLevel = CGFloat(min(max(level, 0.0), 1.0))
+        // Power 0.8 boosts mids slightly
+        let normalized = pow(rawLevel, 0.8)
 
-    fileprivate func adjustBrightness(by amount: Double) -> Color {
-        let nsColor = NSColor(self)
-        guard let rgb = nsColor.usingColorSpace(.deviceRGB) else { return self }
-        let r = min(max(rgb.redComponent + CGFloat(amount), 0), 1)
-        let g = min(max(rgb.greenComponent + CGFloat(amount), 0), 1)
-        let b = min(max(rgb.blueComponent + CGFloat(amount), 0), 1)
-        return Color(red: Double(r), green: Double(g), blue: Double(b))
-    }
+        let center = CGFloat(count) / 2.0
+        let dist = abs(CGFloat(index) - center)
+        let maxDist = center
 
-    fileprivate init?(hex: String) {
-        let trimmed = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard trimmed.count == 6 else { return nil }
+        let baseHeight: CGFloat = 5
+        let variableHeight: CGFloat = 24 * normalized
 
-        var int: UInt64 = 0
-        guard Scanner(string: trimmed).scanHexInt64(&int) else { return nil }
+        // Constant speed ripple to avoid phase jumps (Jitter Fix #1)
+        // 8.0 rad/s is a steady energetic pulse
+        let time = date.timeIntervalSinceReferenceDate
+        let speed = 8.0
 
-        let r = Double((int >> 16) & 0xFF) / 255.0
-        let g = Double((int >> 8) & 0xFF) / 255.0
-        let b = Double(int & 0xFF) / 255.0
-        self.init(red: r, green: g, blue: b)
+        // Add a secondary wave that moves faster but is quieter
+        // This adds "shimmer" without breaking phase
+        let wave1 = sin(time * speed + Double(index) * 0.6)
+        let wave2 = sin(time * speed * 2.3 + Double(index) * 0.8) * 0.5
+
+        // Combine waves
+        let ripple = (wave1 + wave2) / 1.5 * 0.5 + 0.5
+
+        // Shape factor (tapering to edges)
+        let shapeFactor = 1.0 - (dist / maxDist) * 0.5
+
+        // Breathing animation:
+        // Idle: small amplitude (2.0)
+        // Active: adds jitter/life but scales smoothly with level
+        let breathing = CGFloat(ripple) * (2.0 + 8.0 * normalized)
+
+        return baseHeight + (variableHeight * shapeFactor) + breathing
     }
 }
 

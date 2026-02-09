@@ -316,7 +316,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.midX - (windowSize.width / 2)
-            let y = screenFrame.maxY - 80
+            // Position near the top of the screen (notch area)
+            // On Macs with a notch, main.visibleFrame.maxY is usually below the menu bar.
+            // Screen.frame.maxY is the absolute top.
+            // Let's position it just below the menu bar by default for visibility,
+            // but effectively "hugging" it.
+            let y = screenFrame.maxY - 10  // Much tighter to the top
             window.setFrameOrigin(NSPoint(x: x, y: y))
         }
 
@@ -357,7 +362,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "bottomLeft", "bottomCenter", "bottomRight":
             y = screenFrame.minY + verticalPadding
         default:
-            y = screenFrame.maxY - verticalPadding
+            // "overlay around dynamic island" preference means tight to top
+            y = screenFrame.maxY - 10
         }
         window.setFrameOrigin(NSPoint(x: x, y: y))
 

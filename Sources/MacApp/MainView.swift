@@ -540,37 +540,69 @@ private struct VoiceMemoMiniRow: View {
 private struct CompactWaveform: View {
     let level: Float
     private let barCount = 14
+    private let particlesPerBar = 14
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let height = proxy.size.height
-            let barWidth = max((width / CGFloat(barCount)) - 2, 2)
-            let normalized = CGFloat(min(max(level, 0.02), 1))
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let normalized = CGFloat(min(max(level, 0.02), 1))
+                let spacing: CGFloat = 2
+                let barWidth = max((size.width / CGFloat(barCount)) - spacing, 2)
+                let centerY = size.height / 2
+                let burst = max(0, (normalized - 0.6) / 0.4)
+                let time = timeline.date.timeIntervalSinceReferenceDate
 
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { index in
+                for index in 0..<barCount {
                     let phase = CGFloat(index) / CGFloat(barCount)
                     let mod = 0.35 + 0.65 * sin((phase * .pi * 2) + (normalized * 2))
-                    let barHeight = max(4, height * normalized * mod)
+                    let barHeight = max(4, size.height * normalized * mod)
+                    let originX = CGFloat(index) * (barWidth + spacing) + (barWidth / 2)
 
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.6, green: 0.4, blue: 1.0),
-                                    Color(red: 0.3, green: 0.6, blue: 1.0),
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
+                    for particle in 0..<particlesPerBar {
+                        let seed = (index + 1) * 1000 + particle * 17
+                        let randX = pseudoRandom(seed)
+                        let randY = pseudoRandom(seed + 1)
+                        let randSize = pseudoRandom(seed + 2)
+                        let randPhase = pseudoRandom(seed + 3)
+
+                        let drift = sin(time * (1.2 + Double(randPhase) * 1.5) + Double(seed))
+                        let lift = cos(time * (1.4 + Double(randPhase)) + Double(seed))
+                        let jitterX = CGFloat(drift) * (1.2 + 4 * burst)
+                        let jitterY = CGFloat(lift) * (1.0 + 6 * burst)
+
+                        let x = originX + (randX - 0.5) * barWidth + jitterX
+                        let y = centerY + (randY - 0.5) * barHeight + jitterY
+
+                        let radius = 1.0 + randSize * (1.4 + (1.6 * normalized))
+                        let color = particleColor(t: randY)
+                            .opacity(0.25 + (0.55 * normalized))
+
+                        let rect = CGRect(
+                            x: x - radius,
+                            y: y - radius,
+                            width: radius * 2,
+                            height: radius * 2
                         )
-                        .frame(width: barWidth, height: barHeight)
-                        .opacity(0.6 + (0.4 * normalized))
+                        context.fill(Path(ellipseIn: rect), with: .color(color))
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
+    }
+
+    private func particleColor(t: CGFloat) -> Color {
+        let clamped = min(max(t, 0), 1)
+        let start = (r: 0.62, g: 0.46, b: 1.0)
+        let end = (r: 0.3, g: 0.6, b: 1.0)
+        let r = start.r + (end.r - start.r) * clamped
+        let g = start.g + (end.g - start.g) * clamped
+        let b = start.b + (end.b - start.b) * clamped
+        return Color(red: r, green: g, blue: b)
+    }
+
+    private func pseudoRandom(_ seed: Int) -> CGFloat {
+        let value = sin(Double(seed) * 12.9898) * 43758.5453
+        return CGFloat(value - floor(value))
     }
 }
 
