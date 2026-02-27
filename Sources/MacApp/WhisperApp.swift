@@ -15,6 +15,26 @@ struct WhisperApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private enum OutputMethod {
+        case ax
+        case paste
+        case type
+        case clipboard
+
+        func value(withClipboard: Bool) -> String {
+            switch self {
+            case .ax:
+                return withClipboard ? "ax+clipboard" : "ax"
+            case .paste:
+                return withClipboard ? "paste+clipboard" : "paste"
+            case .type:
+                return withClipboard ? "type+clipboard" : "type"
+            case .clipboard:
+                return "clipboard"
+            }
+        }
+    }
+
     private var statusItem: NSStatusItem!
     private var hotkey: HotKey?
     private var stopHotkey: HotKey?
@@ -86,24 +106,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupCallbacks() {
-        // Wire up error handlers for debugging
-        audioCapture.onError = { error in
-            print("[AudioCapture] Error: \(error)")
-        }
-
-        audioCapture.onLevel = { [weak self] level in
-            DispatchQueue.main.async {
+        CallbackSetup.configure(
+            audioCapture: audioCapture,
+            transcriber: transcriber,
+            onAudioError: { error in
+                print("[AudioCapture] Error: \(error)")
+            },
+            onAudioLevel: { [weak self] level in
                 self?.statusViewModel.level = level
                 self?.handleAudioLevel(level)
-            }
-        }
-
-        transcriber.onError = { error in
-            print("[Transcriber] Error: \(error)")
-        }
-
-        transcriber.onModelLoaded = { [weak self] success, error in
-            DispatchQueue.main.async {
+            },
+            onTranscriberError: { error in
+                print("[Transcriber] Error: \(error)")
+            },
+            onModelLoaded: { [weak self] success, error in
                 if success {
                     print("[Transcriber] Model loaded successfully")
                     self?.state = .ready
@@ -112,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.state = .error(error ?? "Model load failed")
                 }
             }
-        }
+        )
     }
 
     private func requestPermissionsAndLoad() {
@@ -556,8 +572,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let payload = await transcriber.transcribe(audio) else {
                 print("[Whisper] Transcription returned nil")
                 await MainActor.run {
-                    lastTranscription = "(no speech detected)"
-                    state = .ready
+                    self.lastTranscription = "(no speech detected)"
+                    self.state = .ready
                 }
                 return
             }
@@ -584,57 +600,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard self.activeTranscriptionID == transcriptionID, !Task.isCancelled else {
                     return
                 }
-                if alwaysCopyToClipboard {
+                if self.alwaysCopyToClipboard {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(finalText, forType: .string)
                 }
 
                 // Then type or paste at the cursor
                 do {
-                    let shouldForceAX = shouldForceAXInsertForTarget()
-                    let shouldPaste = usePaste || shouldForcePasteForTarget()
+                    let targetBundleID =
+                        self.lastTargetBundleIdentifier ?? self.lastTargetApp?.bundleIdentifier
+                    let targetName = self.lastTargetApp?.localizedName ?? ""
+                    let strategy = TextInjectionRouter.strategy(
+                        bundleID: targetBundleID,
+                        appName: targetName,
+                        userPrefersPaste: self.usePaste
+                    )
 
-                    if shouldForceAX {
+                    if strategy == .axInsert {
                         print("[Whisper] AX inserting text...")
                         let axInserted =
-                            (try? textInjector.insertIntoFocusedElementAdvanced(finalText)) ?? false
+                            (try? self.textInjector.insertIntoFocusedElementAdvanced(finalText))
+                            ?? false
                         if axInserted {
-                            dictationHistory.addEntry(
+                            self.addHistoryEntry(
                                 text: finalText,
-                                durationSeconds: Double(duration),
-                                model: selectedModel,
-                                outputMethod: alwaysCopyToClipboard ? "ax+clipboard" : "ax"
+                                duration: duration,
+                                method: .ax
                             )
                         } else {
                             print("[Whisper] AX insert failed, falling back to paste")
-                            try textInjector.paste(finalText)
-                            dictationHistory.addEntry(
+                            try self.textInjector.paste(finalText)
+                            self.addHistoryEntry(
                                 text: finalText,
-                                durationSeconds: Double(duration),
-                                model: selectedModel,
-                                outputMethod: alwaysCopyToClipboard ? "paste+clipboard" : "paste"
+                                duration: duration,
+                                method: .paste
                             )
                         }
-                    } else if shouldPaste {
+                    } else if strategy == .paste {
                         print("[Whisper] Pasting text...")
-                        try textInjector.paste(finalText)
-                        dictationHistory.addEntry(
+                        try self.textInjector.paste(finalText)
+                        self.addHistoryEntry(
                             text: finalText,
-                            durationSeconds: Double(duration),
-                            model: selectedModel,
-                            outputMethod: alwaysCopyToClipboard ? "paste+clipboard" : "paste"
+                            duration: duration,
+                            method: .paste
                         )
                     } else {
                         print("[Whisper] Typing text...")
-                        try textInjector.type(finalText)
-                        dictationHistory.addEntry(
+                        try self.textInjector.type(finalText)
+                        self.addHistoryEntry(
                             text: finalText,
-                            durationSeconds: Double(duration),
-                            model: selectedModel,
-                            outputMethod: alwaysCopyToClipboard ? "type+clipboard" : "type"
+                            duration: duration,
+                            method: .type
                         )
                     }
-                    lastTranscription = finalText
+                    self.lastTranscription = finalText
                     print("[Whisper] Text injected successfully")
                 } catch {
                     print("[Whisper] Text injection failed: \(error)")
@@ -649,18 +668,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "\(finalText)\n\n[Injection error] \(debugMessage)\n[Hint] Enable Accessibility for Whisper in System Settings > Privacy & Security > Accessibility."
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(combined, forType: .string)
-                    lastTranscription = "Copied: \(finalText)"
-                    dictationHistory.addEntry(
-                        text: finalText,
-                        durationSeconds: Double(duration),
-                        model: selectedModel,
-                        outputMethod: "clipboard"
-                    )
+                    self.lastTranscription = "Copied: \(finalText)"
+                    self.addHistoryEntry(text: finalText, duration: duration, method: .clipboard)
                 }
 
                 if self.activeTranscriptionID == transcriptionID {
-                    state = .ready
-                    updateHistoryMenu()
+                    self.state = .ready
+                    self.updateHistoryMenu()
                 }
             }
         }
@@ -725,54 +739,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.activate(options: [.activateIgnoringOtherApps])
     }
 
-    private func shouldForcePasteForTarget() -> Bool {
-        let bundleID = lastTargetBundleIdentifier ?? lastTargetApp?.bundleIdentifier
-        let name = lastTargetApp?.localizedName ?? ""
-        let bundleIDs: Set<String> = [
-            "com.microsoft.VSCode",
-            "com.microsoft.VSCodeInsiders",
-            "com.microsoft.VSCodeInsiders2",
-            "com.vscodium",
-        ]
-
-        if let bundleID, bundleIDs.contains(bundleID) {
-            return true
-        }
-
-        if name.localizedCaseInsensitiveContains("Visual Studio Code - Insiders") {
-            return true
-        }
-
-        if name.localizedCaseInsensitiveContains("VS Code Insiders") {
-            return true
-        }
-
-        return false
-    }
-
-    private func shouldForceAXInsertForTarget() -> Bool {
-        let bundleID = lastTargetBundleIdentifier ?? lastTargetApp?.bundleIdentifier
-        let name = lastTargetApp?.localizedName ?? ""
-        let bundleIDs: Set<String> = [
-            "com.microsoft.VSCode",
-            "com.microsoft.VSCodeInsiders",
-            "com.microsoft.VSCodeInsiders2",
-            "com.vscodium",
-        ]
-
-        if let bundleID, bundleIDs.contains(bundleID) {
-            return true
-        }
-
-        if name.localizedCaseInsensitiveContains("Visual Studio Code - Insiders") {
-            return true
-        }
-
-        if name.localizedCaseInsensitiveContains("VS Code Insiders") {
-            return true
-        }
-
-        return false
+    private func addHistoryEntry(text: String, duration: Float, method: OutputMethod) {
+        dictationHistory.addEntry(
+            text: text,
+            durationSeconds: Double(duration),
+            model: selectedModel,
+            outputMethod: method.value(withClipboard: alwaysCopyToClipboard)
+        )
     }
 
     // MARK: - UI Updates

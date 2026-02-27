@@ -168,7 +168,7 @@ struct VoiceMemosView: View {
                     .buttonStyle(.plain)
                 }
 
-                Text(formatDuration(manager.currentDuration))
+                Text(TimeFormatter.formatDuration(manager.currentDuration))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -222,13 +222,6 @@ struct VoiceMemosView: View {
         }
     }
 
-    private func formatDuration(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(value)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
     private var missingTimingsCount: Int {
         manager.memos.filter { ($0.transcriptWords?.isEmpty ?? true) && !$0.isTranscribing }.count
     }
@@ -262,7 +255,7 @@ private struct VoiceMemoRow: View {
                 HStack(spacing: 8) {
                     Text(memo.title)
                         .font(.system(size: 13, weight: .medium))
-                    Text(formatDuration(memo.durationSeconds))
+                    Text(TimeFormatter.formatDuration(memo.durationSeconds))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -344,12 +337,6 @@ private struct VoiceMemoRow: View {
         }
     }
 
-    private func formatDuration(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(value)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
 }
 
 private struct VoiceMemoDetailView: View {
@@ -430,11 +417,11 @@ private struct VoiceMemoDetailView: View {
                     Slider(value: playbackBinding, in: 0...max(playbackDuration, 0.1))
                         .tint(.blue)
                     HStack {
-                        Text(formatDuration(playbackTime))
+                        Text(TimeFormatter.formatDuration(playbackTime))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text(formatDuration(playbackDuration))
+                        Text(TimeFormatter.formatDuration(playbackDuration))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -545,13 +532,6 @@ private struct VoiceMemoDetailView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
-    }
-
-    private func formatDuration(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(value)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
     }
 
     @MainActor

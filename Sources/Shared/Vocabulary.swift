@@ -169,6 +169,12 @@ public final class Vocabulary {
         loadSouthernSlang()
     }
 
+    private func loadPresetTerms(_ terms: [String], category: String) {
+        for term in terms {
+            add(term, category: category)
+        }
+    }
+
     private func loadSoftwareEngineering() {
         let terms = [
             // Languages & Runtimes
@@ -199,9 +205,7 @@ public final class Vocabulary {
             "Langchain", "LlamaIndex", "Pinecone", "Weaviate", "ChromaDB",
             "transformer", "BERT", "diffusion", "Stable Diffusion", "Midjourney",
         ]
-        for term in terms {
-            add(term, category: "Software Engineering")
-        }
+        loadPresetTerms(terms, category: "Software Engineering")
     }
 
     private func loadJavaScriptTypeScript() {
@@ -229,9 +233,7 @@ public final class Vocabulary {
             // Types
             "Zod", "Yup", "io-ts", "TypeBox", "tRPC", "Prisma", "Drizzle",
         ]
-        for term in terms {
-            add(term, category: "JavaScript/TypeScript")
-        }
+        loadPresetTerms(terms, category: "JavaScript/TypeScript")
     }
 
     private func loadFrontend() {
@@ -257,9 +259,7 @@ public final class Vocabulary {
             "accessibility", "a11y", "ARIA", "screen reader", "WCAG",
             "semantic HTML", "focus management", "keyboard navigation",
         ]
-        for term in terms {
-            add(term, category: "Frontend")
-        }
+        loadPresetTerms(terms, category: "Frontend")
     }
 
     private func loadHipHop() {
@@ -295,9 +295,7 @@ public final class Vocabulary {
             "feature", "collab", "diss track", "beef", "clout",
             "drip", "flex", "ice", "bling", "chain", "grill",
         ]
-        for term in terms {
-            add(term, category: "Hip-Hop")
-        }
+        loadPresetTerms(terms, category: "Hip-Hop")
     }
 
     private func loadHoustonTexas() {
@@ -332,9 +330,7 @@ public final class Vocabulary {
             "Texans", "Rockets", "Astros", "Dynamo", "Dash",
             "Cougars", "UH", "Rice Owls", "TSU Tigers",
         ]
-        for term in terms {
-            add(term, category: "Houston/Texas")
-        }
+        loadPresetTerms(terms, category: "Houston/Texas")
     }
 
     private func loadLouisianaNOLA() {
@@ -371,9 +367,7 @@ public final class Vocabulary {
             "Louis Armstrong", "Fats Domino", "Professor Longhair",
             "The Meters", "Rebirth Brass Band", "Big Freedia",
         ]
-        for term in terms {
-            add(term, category: "Louisiana/NOLA")
-        }
+        loadPresetTerms(terms, category: "Louisiana/NOLA")
     }
 
     private func loadTrackAndField() {
@@ -408,9 +402,7 @@ public final class Vocabulary {
             "heat", "semifinal", "final", "Diamond League",
             "Olympic Trials", "World Championships", "NCAA",
         ]
-        for term in terms {
-            add(term, category: "Track & Field")
-        }
+        loadPresetTerms(terms, category: "Track & Field")
     }
 
     private func loadBasketball() {
@@ -446,9 +438,7 @@ public final class Vocabulary {
             "point guard", "shooting guard", "small forward",
             "power forward", "center", "stretch five", "positionless",
         ]
-        for term in terms {
-            add(term, category: "Basketball")
-        }
+        loadPresetTerms(terms, category: "Basketball")
     }
 
     private func loadSports() {
@@ -491,9 +481,7 @@ public final class Vocabulary {
             "Grand Slam", "Wimbledon", "US Open", "French Open",
             "Serena Williams", "Venus Williams", "Roger Federer",
         ]
-        for term in terms {
-            add(term, category: "Sports")
-        }
+        loadPresetTerms(terms, category: "Sports")
     }
 
     private func loadStandUpComedy() {
@@ -532,9 +520,7 @@ public final class Vocabulary {
             "Raw", "Delirious", "The Original Kings of Comedy",
             "Bring the Pain", "Bigger & Blacker", "Kill the Messenger",
         ]
-        for term in terms {
-            add(term, category: "Stand-Up Comedy")
-        }
+        loadPresetTerms(terms, category: "Stand-Up Comedy")
     }
 
     private func loadPopCulture() {
@@ -571,9 +557,7 @@ public final class Vocabulary {
             "rent free", "living rent free", "touch grass",
             "ratio", "L take", "W", "based", "goated",
         ]
-        for term in terms {
-            add(term, category: "Pop Culture")
-        }
+        loadPresetTerms(terms, category: "Pop Culture")
     }
 
     private func loadSouthernSlang() {
@@ -605,8 +589,6 @@ public final class Vocabulary {
             "grippin' grain", "sittin' sideways", "tippin'",
             "comin' down", "pourin' up", "leanin'",
         ]
-        for term in terms {
-            add(term, category: "Southern Slang")
-        }
+        loadPresetTerms(terms, category: "Southern Slang")
     }
 }

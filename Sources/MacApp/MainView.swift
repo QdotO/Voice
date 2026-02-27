@@ -190,7 +190,7 @@ struct MainView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Text(formatDuration(voiceMemoManager.currentDuration))
+                    Text(TimeFormatter.formatDuration(voiceMemoManager.currentDuration))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -437,12 +437,6 @@ struct MainView: View {
         return formatter.string(from: date)
     }
 
-    private func formatDuration(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(value)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
 }
 
 private struct BentoTile<Content: View>: View {
@@ -514,7 +508,7 @@ private struct VoiceMemoMiniRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(memo.title)
                     .font(.system(size: 12, weight: .medium))
-                Text(formatDuration(memo.durationSeconds))
+                Text(TimeFormatter.formatDuration(memo.durationSeconds))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -529,12 +523,6 @@ private struct VoiceMemoMiniRow: View {
         .padding(.vertical, 4)
     }
 
-    private func formatDuration(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(value)
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
 }
 
 private struct CompactWaveform: View {

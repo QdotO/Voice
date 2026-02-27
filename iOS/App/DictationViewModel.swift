@@ -27,27 +27,23 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func setupCallbacks() {
-        audioCapture.onError = { [weak self] error in
-            Task { @MainActor in
+        CallbackSetup.configure(
+            audioCapture: audioCapture,
+            transcriber: transcriber,
+            onAudioError: { [weak self] error in
                 self?.errorMessage = error
-            }
-        }
-
-        transcriber.onError = { [weak self] error in
-            Task { @MainActor in
+            },
+            onTranscriberError: { [weak self] error in
                 self?.errorMessage = error
-            }
-        }
-
-        transcriber.onModelLoaded = { [weak self] success, error in
-            Task { @MainActor in
+            },
+            onModelLoaded: { [weak self] success, error in
                 if success {
                     self?.stateLabel = "Ready"
                 } else {
                     self?.stateLabel = error ?? "Model error"
                 }
             }
-        }
+        )
     }
 
     private func requestPermissionsAndLoad() {

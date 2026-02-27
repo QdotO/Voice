@@ -32,7 +32,7 @@ final class KeyboardViewController: UIInputViewController {
         let gradient = CAGradientLayer()
         gradient.colors = [
             UIColor(red: 0.4, green: 0.2, blue: 0.75, alpha: 1).cgColor,
-            UIColor(red: 0.2, green: 0.45, blue: 0.9, alpha: 1).cgColor
+            UIColor(red: 0.2, green: 0.45, blue: 0.9, alpha: 1).cgColor,
         ]
         gradient.startPoint = CGPoint(x: 0, y: 0)
         gradient.endPoint = CGPoint(x: 1, y: 1)
@@ -72,39 +72,36 @@ final class KeyboardViewController: UIInputViewController {
             statusLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
 
             actionButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            actionButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            actionButton.trailingAnchor.constraint(
+                equalTo: container.trailingAnchor, constant: -12),
             actionButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 12),
             actionButton.heightAnchor.constraint(equalToConstant: 44),
 
             hintLabel.topAnchor.constraint(equalTo: actionButton.bottomAnchor, constant: 10),
             hintLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
             hintLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            hintLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+            hintLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
         ])
     }
 
     private func setupCallbacks() {
-        audioCapture.onError = { [weak self] error in
-            DispatchQueue.main.async {
+        CallbackSetup.configure(
+            audioCapture: audioCapture,
+            transcriber: transcriber,
+            onAudioError: { [weak self] error in
                 self?.statusLabel.text = error
-            }
-        }
-
-        transcriber.onError = { [weak self] error in
-            DispatchQueue.main.async {
+            },
+            onTranscriberError: { [weak self] error in
                 self?.statusLabel.text = error
-            }
-        }
-
-        transcriber.onModelLoaded = { [weak self] success, error in
-            DispatchQueue.main.async {
+            },
+            onModelLoaded: { [weak self] success, error in
                 if success {
                     self?.statusLabel.text = "Ready"
                 } else {
                     self?.statusLabel.text = error ?? "Model error"
                 }
             }
-        }
+        )
     }
 
     private func requestPermissionsAndLoad() {

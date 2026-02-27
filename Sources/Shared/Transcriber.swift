@@ -41,40 +41,13 @@ public final class Transcriber {
             return nil
         }
 
-        guard !audio.isEmpty else {
-            onError?("Audio buffer is empty")
+        guard let durationSeconds = validateAndPrepareAudio(audio) else {
             return nil
         }
-
-        let durationSeconds = Float(audio.count) / 16000.0
         print("[Transcriber] Audio duration: \(durationSeconds)s, samples: \(audio.count)")
 
         do {
-            // Simplified options for reliability - disabled prefill which can cause issues
-            let options = DecodingOptions(
-                verbose: true,  // Enable for debugging
-                task: .transcribe,
-                language: "en",
-                temperature: 0.0,
-                temperatureFallbackCount: 3,
-                topK: 5,
-                usePrefillPrompt: false,  // Disabled - can cause issues with nil promptTokens
-                usePrefillCache: false,
-                skipSpecialTokens: true,
-                withoutTimestamps: false,
-                wordTimestamps: true,
-                clipTimestamps: [],
-                promptTokens: nil,
-                prefixTokens: nil,
-                suppressBlank: false,  // Allow blanks for debugging
-                supressTokens: nil,
-                compressionRatioThreshold: 2.4,
-                logProbThreshold: -1.0,
-                firstTokenLogProbThreshold: -1.5,
-                noSpeechThreshold: 0.3,  // Lowered from 0.6 - more permissive
-                concurrentWorkerCount: 4,
-                chunkingStrategy: nil
-            )
+            let options = createDecodingOptions()
 
             let results = try await whisperKit.transcribe(
                 audioArray: audio,
@@ -94,21 +67,64 @@ public final class Transcriber {
             let text = cleanTranscription(result.text)
             guard !text.isEmpty else { return nil }
 
-            let words = result.allWords
-                .map { word in
-                    TranscriptWord(
-                        word: word.word.trimmingCharacters(in: .whitespacesAndNewlines),
-                        start: Double(word.start),
-                        end: Double(word.end)
-                    )
-                }
-                .filter { !$0.word.isEmpty }
-
-            return TranscriptionPayload(text: text, words: words)
+            return makePayload(from: result, cleanedText: text)
         } catch {
             onError?("Transcription failed: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    private func validateAndPrepareAudio(_ audio: [Float]) -> Float? {
+        guard !audio.isEmpty else {
+            onError?("Audio buffer is empty")
+            return nil
+        }
+        return Float(audio.count) / 16000.0
+    }
+
+    // Keep decode option defaults in one place to avoid drift across call sites.
+    private func createDecodingOptions() -> DecodingOptions {
+        DecodingOptions(
+            verbose: true,
+            task: .transcribe,
+            language: "en",
+            temperature: 0.0,
+            temperatureFallbackCount: 3,
+            topK: 5,
+            usePrefillPrompt: false,
+            usePrefillCache: false,
+            skipSpecialTokens: true,
+            withoutTimestamps: false,
+            wordTimestamps: true,
+            clipTimestamps: [],
+            promptTokens: nil,
+            prefixTokens: nil,
+            suppressBlank: false,
+            supressTokens: nil,
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -1.0,
+            firstTokenLogProbThreshold: -1.5,
+            noSpeechThreshold: 0.3,
+            concurrentWorkerCount: 4,
+            chunkingStrategy: nil
+        )
+    }
+
+    private func makePayload(
+        from result: TranscriptionResult,
+        cleanedText: String
+    ) -> TranscriptionPayload {
+        let words = result.allWords
+            .map { word in
+                TranscriptWord(
+                    word: word.word.trimmingCharacters(in: .whitespacesAndNewlines),
+                    start: Double(word.start),
+                    end: Double(word.end)
+                )
+            }
+            .filter { !$0.word.isEmpty }
+
+        return TranscriptionPayload(text: cleanedText, words: words)
     }
 
     /// Clean up common Whisper artifacts

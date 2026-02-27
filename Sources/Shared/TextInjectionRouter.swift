@@ -10,33 +10,29 @@ public struct TextInjectionRouter {
         case type  // Character-by-character CGEvent posting
     }
 
-    /// Bundle IDs that require AX insertion for proper text injection.
-    public static let axInsertBundleIDs: Set<String> = [
+    /// Bundle IDs used for editor-specific routing (VS Code family).
+    public static let vscodeEditorBundleIDs: Set<String> = [
         "com.microsoft.VSCode",
         "com.microsoft.VSCodeInsiders",
         "com.microsoft.VSCodeInsiders2",
         "com.vscodium",
     ]
 
-    /// Bundle IDs that require paste for proper text injection.
-    public static let pasteBundleIDs: Set<String> = [
-        "com.microsoft.VSCode",
-        "com.microsoft.VSCodeInsiders",
-        "com.microsoft.VSCodeInsiders2",
-        "com.vscodium",
-    ]
+    /// Backward-compatible alias for tests and existing callers.
+    public static let axInsertBundleIDs: Set<String> = vscodeEditorBundleIDs
+    /// Backward-compatible alias for tests and existing callers.
+    public static let pasteBundleIDs: Set<String> = vscodeEditorBundleIDs
 
-    /// Name substrings that indicate an AX-insert target.
-    public static let axInsertNamePatterns: [String] = [
+    /// Name patterns used for editor-specific routing (VS Code family).
+    public static let vscodeEditorNamePatterns: [String] = [
         "Visual Studio Code - Insiders",
         "VS Code Insiders",
     ]
 
-    /// Name substrings that indicate a paste target.
-    public static let pasteNamePatterns: [String] = [
-        "Visual Studio Code - Insiders",
-        "VS Code Insiders",
-    ]
+    /// Backward-compatible alias for tests and existing callers.
+    public static let axInsertNamePatterns: [String] = vscodeEditorNamePatterns
+    /// Backward-compatible alias for tests and existing callers.
+    public static let pasteNamePatterns: [String] = vscodeEditorNamePatterns
 
     /// Determine the injection strategy for a given target app.
     ///
@@ -65,22 +61,18 @@ public struct TextInjectionRouter {
     }
 
     public static func shouldForceAXInsert(bundleID: String?, appName: String) -> Bool {
-        if let bundleID, axInsertBundleIDs.contains(bundleID) {
-            return true
-        }
-        for pattern in axInsertNamePatterns {
-            if appName.localizedCaseInsensitiveContains(pattern) {
-                return true
-            }
-        }
-        return false
+        matchesVSCodeEditor(bundleID: bundleID, appName: appName)
     }
 
     public static func shouldForcePaste(bundleID: String?, appName: String) -> Bool {
-        if let bundleID, pasteBundleIDs.contains(bundleID) {
+        matchesVSCodeEditor(bundleID: bundleID, appName: appName)
+    }
+
+    private static func matchesVSCodeEditor(bundleID: String?, appName: String) -> Bool {
+        if let bundleID, vscodeEditorBundleIDs.contains(bundleID) {
             return true
         }
-        for pattern in pasteNamePatterns {
+        for pattern in vscodeEditorNamePatterns {
             if appName.localizedCaseInsensitiveContains(pattern) {
                 return true
             }

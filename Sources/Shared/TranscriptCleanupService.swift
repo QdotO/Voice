@@ -91,22 +91,12 @@ public struct TranscriptCleanupService {
 
     static func basicCleanup(_ text: String) -> String {
         var value = text
-        value = value.replacingOccurrences(of: "\r\n", with: "\n")
-        value = value.replacingOccurrences(of: "\r", with: "\n")
-
-        while value.contains("\n\n\n") {
-            value = value.replacingOccurrences(of: "\n\n\n", with: "\n\n")
-        }
-
+        value = value.replacingOccurrences(of: "\r\n|\r", with: "\n", options: .regularExpression)
+        value = value.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         value = value.replacingOccurrences(of: "\t", with: " ")
-        while value.contains("  ") {
-            value = value.replacingOccurrences(of: "  ", with: " ")
-        }
-
-        value = value.replacingOccurrences(of: " ,", with: ",")
-        value = value.replacingOccurrences(of: " .", with: ".")
-        value = value.replacingOccurrences(of: " !", with: "!")
-        value = value.replacingOccurrences(of: " ?", with: "?")
+        value = value.replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+        value = value.replacingOccurrences(
+            of: " +([,.!?])", with: "$1", options: .regularExpression)
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
