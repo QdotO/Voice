@@ -17,6 +17,12 @@ Default endpoint:
 http://127.0.0.1:32190/analyze
 ```
 
+Cleanup endpoint:
+
+```
+http://127.0.0.1:32190/cleanup
+```
+
 Health endpoint:
 
 ```
@@ -29,6 +35,12 @@ http://127.0.0.1:32190/health
 { "texts": ["string", "string"] }
 ```
 
+Cleanup payload:
+
+```json
+{ "text": "string" }
+```
+
 ## Response
 
 ```json
@@ -36,6 +48,14 @@ http://127.0.0.1:32190/health
   "summary": "Bridge keyword scan",
   "themes": ["Frequent topics: ..."],
   "confidence": 0.4
+}
+```
+
+Cleanup response:
+
+```json
+{
+  "cleanedText": "string"
 }
 ```
 

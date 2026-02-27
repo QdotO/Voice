@@ -9,13 +9,13 @@ Whisper is a **speech-to-text dictation app** powered by [WhisperKit](https://gi
 
 ### Key Targets & Layers
 
-| Target            | Path              | Purpose                                                                                                                       |
-| ----------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `WhisperShared`   | `Sources/Shared/` | Core library: audio capture, transcription, voice memos, correction engine, vocabulary, design system. Shared by all targets. |
-| `Whisper` (macOS) | `Sources/MacApp/` | Menu-bar app. Uses `HotKey` for global shortcuts, `TextInjector` for typing/pasting into other apps via Accessibility APIs.   |
-| `WhisperiOS`      | `iOS/App/`        | iOS companion app with `DictationViewModel` driving `ContentView`.                                                            |
-| `WhisperKeyboard` | `iOS/Keyboard/`   | Custom keyboard extension that inserts transcribed text via `textDocumentProxy`. Uses `tiny.en` model for speed.              |
-| `WhisperTests`    | `Tests/`          | Unit tests against `WhisperShared`.                                                                                           |
+| Target | Path | Purpose |
+|---|---|---|
+| `WhisperShared` | `Sources/Shared/` | Core library: audio capture, transcription, voice memos, correction engine, vocabulary, design system. Shared by all targets. |
+| `Whisper` (macOS) | `Sources/MacApp/` | Menu-bar app. Uses `HotKey` for global shortcuts, `TextInjector` for typing/pasting into other apps via Accessibility APIs. |
+| `WhisperiOS` | `iOS/App/` | iOS companion app with `DictationViewModel` driving `ContentView`. |
+| `WhisperKeyboard` | `iOS/Keyboard/` | Custom keyboard extension that inserts transcribed text via `textDocumentProxy`. Uses `tiny.en` model for speed. |
+| `WhisperTests` | `Tests/` | Unit tests against `WhisperShared`. |
 
 ### Data Flow
 
@@ -43,28 +43,21 @@ The iOS target requires **iOS 26.0+** deployment target and uses bundle ID `com.
 ## Project Conventions
 
 ### Shared Singletons & Persistence
-
 Core services use the singleton pattern (`CorrectionEngine.shared`, `DictationHistory.shared`, `Vocabulary.shared`, `VoiceMemoStore.shared`). All persist JSON files under `SharedStorage.baseDirectory()/Whisper/`:
-
 - `corrections.json`, `dictation-history.json`, `vocabulary.json`, `voice-memos.json`
 
 On iOS, set `SharedStorage.appGroupID` before accessing storage (see `KeyboardViewController.viewDidLoad`).
 
 ### Callback Pattern
-
 `AudioCapture` and `Transcriber` use closure callbacks (`onError`, `onLevel`, `onModelLoaded`) rather than Combine or async sequences. Wire them up in a `setupCallbacks()` method.
 
 ### Design System
-
 Use `DesignSystem` constants from `Sources/Shared/DesignSystem.swift`:
-
 - `.backgroundGradient` (dark purple/blue), `.accentGradient` (purple→blue), `.glassCard()` modifier
 - iOS views replicate this manually (see `ContentView.swift` background gradient)
 
 ### Text Injection (macOS only)
-
 `TextInjector` in `Sources/MacApp/TextInjector.swift` supports three strategies:
-
 1. **AX insert** — preferred for VS Code and similar apps (`insertIntoFocusedElementAdvanced`)
 2. **Paste** — `Cmd+V` with clipboard save/restore
 3. **Type** — character-by-character CGEvent posting
@@ -72,11 +65,9 @@ Use `DesignSystem` constants from `Sources/Shared/DesignSystem.swift`:
 Target-specific routing uses `shouldForceAXInsertForTarget()` / `shouldForcePasteForTarget()`.
 
 ### AI Integration — Copilot Bridge
-
 `tools/copilot-bridge/` is a local Node HTTP service that calls GitHub Copilot for theme analysis of transcribed text. The Swift client is `CopilotBridgeClient` in `ThemesAnalyzer.swift`. Fallback: `KeywordThemesAnalyzer` does local frequency-based analysis. Always code with this fallback pattern — AI features must degrade gracefully.
 
 ### Vocabulary System
-
 `Vocabulary` (`Sources/Shared/Vocabulary.swift`) ships with rich domain-specific presets (Software Engineering, Hip-Hop, Houston/Texas, Louisiana/NOLA, Track & Field, etc.). Terms feed into the WhisperKit prompt to improve recognition of jargon. Use `Vocabulary.shared.generatePrompt()` to build the prompt string.
 
 ## Testing
@@ -85,10 +76,10 @@ Tests live in `Tests/` and target `WhisperShared`. Use temp directories for stor
 
 ## Key Dependencies
 
-| Dependency                                                     | Usage                                  |
-| -------------------------------------------------------------- | -------------------------------------- |
-| [WhisperKit](https://github.com/argmaxinc/WhisperKit) (≥0.9.0) | On-device speech-to-text inference     |
-| [HotKey](https://github.com/soffes/HotKey) (≥0.2.0)            | Global keyboard shortcuts (macOS only) |
+| Dependency | Usage |
+|---|---|
+| [WhisperKit](https://github.com/argmaxinc/WhisperKit) (≥0.9.0) | On-device speech-to-text inference |
+| [HotKey](https://github.com/soffes/HotKey) (≥0.2.0) | Global keyboard shortcuts (macOS only) |
 
 ## Things to Know
 

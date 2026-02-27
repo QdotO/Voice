@@ -21,12 +21,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== "POST" || req.url !== "/analyze") {
+  if (req.method !== "POST" || (req.url !== "/analyze" && req.url !== "/cleanup")) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));
     return;
   }
 
+  const route = req.url;
   let body = "";
   req.on("data", (chunk) => {
     body += chunk;
@@ -35,9 +36,15 @@ const server = http.createServer(async (req, res) => {
   req.on("end", async () => {
     try {
       const payload = JSON.parse(body || "{}");
-      const texts = Array.isArray(payload.texts) ? payload.texts : [];
+      let result;
 
-      const result = await analyzeWithFallback(texts);
+      if (route === "/analyze") {
+        const texts = Array.isArray(payload.texts) ? payload.texts : [];
+        result = await analyzeWithFallback(texts);
+      } else {
+        const text = typeof payload.text === "string" ? payload.text : "";
+        result = await cleanupWithFallback(text);
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     } catch (error) {
@@ -49,6 +56,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`[copilot-bridge] listening on http://127.0.0.1:${port}/analyze`);
+  console.log(`[copilot-bridge] cleanup endpoint: http://127.0.0.1:${port}/cleanup`);
   console.log(`[copilot-bridge] Copilot model: ${model}`);
 });
 
@@ -124,6 +132,18 @@ function buildPrompt(texts) {
     "",
     "Recent items:",
     `- ${excerpt}`
+  ].join("\n");
+}
+
+function buildCleanupPrompt(text) {
+  return [
+    "You are an assistant that cleans up a speech-to-text transcript.",
+    "Fix punctuation, capitalization, spacing, and obvious transcription artifacts while preserving meaning.",
+    "Do not invent new facts. Keep proper nouns as-is unless clearly wrong.",
+    "Return JSON only with key: cleanedText (string).",
+    "",
+    "Transcript:",
+    text
   ].join("\n");
 }
 
@@ -214,4 +234,61 @@ function analyzeKeywords(texts) {
     themes,
     confidence: 0.4
   };
+}
+
+async function cleanupWithFallback(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) {
+    return { cleanedText: "" };
+  }
+
+  try {
+    const cleanedText = await cleanupWithCopilot(trimmed);
+    if (cleanedText) {
+      lastCopilotError = null;
+      return { cleanedText };
+    }
+  } catch (error) {
+    lastCopilotError = error?.message || String(error);
+    console.error("[copilot-bridge] Cleanup failed:", lastCopilotError);
+  }
+
+  return {
+    cleanedText: basicCleanup(trimmed),
+    error: lastCopilotError
+  };
+}
+
+async function cleanupWithCopilot(text) {
+  const client = await getClient();
+  const session = await client.createSession({ model });
+
+  try {
+    const prompt = buildCleanupPrompt(text);
+    const response = await session.send({ prompt });
+    const content = extractText(response);
+    const parsed = parseJson(content);
+
+    if (parsed && typeof parsed.cleanedText === "string") {
+      return parsed.cleanedText;
+    }
+
+    const fallback = (content || "").trim();
+    return fallback || null;
+  } finally {
+    if (typeof session.close === "function") {
+      await session.close();
+    } else if (typeof session.stop === "function") {
+      await session.stop();
+    }
+  }
+}
+
+function basicCleanup(text) {
+  let value = (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  value = value.replace(/\t/g, " ");
+  value = value.replace(/[ ]{2,}/g, " ");
+  value = value.replace(/\n{3,}/g, "\n\n");
+  value = value.replace(/ ,/g, ",").replace(/ \./g, ".").replace(/ !/g, "!").replace(/ \?/g, "?");
+  return value.trim();
 }
