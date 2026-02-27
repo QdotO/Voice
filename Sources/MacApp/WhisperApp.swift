@@ -38,14 +38,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var hotkey: HotKey?
     private var stopHotkey: HotKey?
+    private var menuBarOnlyHotkey: HotKey?
     private var statusWindow: NSWindow?
     private var statusHostingView: NSHostingView<StatusView>?
+    private var menuBarOnlyItem: NSMenuItem?
     private var historyMenu: NSMenu?
     private var historyWindow: NSWindow?
     private var voiceMemosWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
     private var hotkeyMonitor: NSObjectProtocol?
+    private var capsLockEventTap: CFMachPort?
+    private var capsLockRunLoopSource: CFRunLoopSource?
+    private var isCapsLockDictationPressActive = false
     private var currentHotkeyKeyCode: Int?
     private var currentHotkeyModifiers: Int?
     private var currentStopHotkeyKeyCode: Int?
@@ -82,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @AppStorage("selectedModel") private var selectedModel = "base.en"
     @AppStorage("showStatusIndicator") private var showStatusIndicator = true
+    @AppStorage("menuBarOnlyMode") private var menuBarOnlyMode = false
     @AppStorage("usePaste") private var usePaste = false
     @AppStorage("alwaysCopyToClipboard") private var alwaysCopyToClipboard = true
     @AppStorage("useCustomStatusPosition") private var useCustomStatusPosition = false
@@ -95,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
     @AppStorage("recordingMode") private var recordingMode = "hold"
+    @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         CrashReporter.setup()
@@ -174,6 +181,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 title: "Main Window...", action: #selector(openMainWindow), keyEquivalent: "0"))
         menu.addItem(
             NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        let menuBarOnlyItem = NSMenuItem(
+            title: "Menu Bar Only Mode",
+            action: #selector(toggleMenuBarOnlyMode),
+            keyEquivalent: ""
+        )
+        menuBarOnlyItem.target = self
+        menuBarOnlyItem.state = menuBarOnlyMode ? .on : .off
+        menu.addItem(menuBarOnlyItem)
+        self.menuBarOnlyItem = menuBarOnlyItem
         menu.addItem(NSMenuItem.separator())
 
         let voiceMemosItem = NSMenuItem(
@@ -199,6 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupHotkey() {
         registerHotkey()
         registerStopHotkey()
+        registerMenuBarOnlyHotkey()
+        refreshCapsLockMonitorIfNeeded()
 
         hotkeyMonitor = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
@@ -207,6 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.refreshHotkeyIfNeeded()
             self?.refreshStatusPositionIfNeeded()
+            self?.refreshCapsLockMonitorIfNeeded()
+            self?.updateUI()
         }
     }
 
@@ -224,6 +244,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || newStopModifiers != currentStopHotkeyModifiers
         {
             registerStopHotkey()
+        }
+
+        if menuBarOnlyHotkey == nil {
+            registerMenuBarOnlyHotkey()
+        }
+    }
+
+    private func refreshCapsLockMonitorIfNeeded() {
+        if enableCapsLockHoldToDictate {
+            installCapsLockEventTapIfNeeded()
+        } else {
+            removeCapsLockEventTap()
         }
     }
 
@@ -296,6 +328,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func registerMenuBarOnlyHotkey() {
+        menuBarOnlyHotkey = HotKey(key: .o, modifiers: [.command, .option])
+        menuBarOnlyHotkey?.keyDownHandler = { [weak self] in
+            self?.toggleMenuBarOnlyMode()
+        }
+    }
+
+    private func installCapsLockEventTapIfNeeded() {
+        guard capsLockEventTap == nil else { return }
+
+        let mask =
+            (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
+
+        let callback: CGEventTapCallBack = { _, type, event, refcon in
+            guard let refcon else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+            return appDelegate.handleCapsLockEvent(type: type, event: event)
+        }
+
+        guard
+            let tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: CGEventMask(mask),
+                callback: callback,
+                userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+            )
+        else {
+            print("[Whisper] Failed to install Caps Lock event tap")
+            return
+        }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        capsLockEventTap = tap
+        capsLockRunLoopSource = source
+    }
+
+    private func removeCapsLockEventTap() {
+        if let tap = capsLockEventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let source = capsLockRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        capsLockRunLoopSource = nil
+        capsLockEventTap = nil
+        isCapsLockDictationPressActive = false
+    }
+
+    private func handleCapsLockEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        guard enableCapsLockHoldToDictate else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        guard keyCode == 57 else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        switch type {
+        case .keyDown:
+            if !isCapsLockDictationPressActive {
+                isCapsLockDictationPressActive = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.startRecording()
+                }
+            }
+            return nil
+        case .keyUp:
+            if isCapsLockDictationPressActive {
+                isCapsLockDictationPressActive = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.stopRecording()
+                }
+            }
+            return nil
+        case .flagsChanged:
+            let capsEnabled = event.flags.contains(.maskAlphaShift)
+            if capsEnabled && !isCapsLockDictationPressActive {
+                isCapsLockDictationPressActive = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.startRecording()
+                }
+            } else if !capsEnabled && isCapsLockDictationPressActive {
+                isCapsLockDictationPressActive = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.stopRecording()
+                }
+            }
+            return nil
+        default:
+            return Unmanaged.passUnretained(event)
+        }
+    }
+
     private func setupStatusWindow() {
         let windowSize = NSSize(width: 360, height: 70)
         let window = NSWindow(
@@ -345,8 +480,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         applyStatusWindowPosition()
 
-        if showStatusIndicator {
+        let shouldShowOverlay = showStatusIndicator && !menuBarOnlyMode
+        if shouldShowOverlay {
             window.orderFront(nil)
+        } else {
+            window.orderOut(nil)
         }
     }
 
@@ -775,12 +913,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Update status window
         if let window = statusWindow {
-            if showStatusIndicator {
+            let shouldShowOverlay = showStatusIndicator && !menuBarOnlyMode
+            if shouldShowOverlay {
                 window.orderFront(nil)
             } else {
                 window.orderOut(nil)
             }
         }
+
+        menuBarOnlyItem?.state = menuBarOnlyMode ? .on : .off
     }
 
     private func updateHistoryMenu() {
@@ -825,6 +966,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupSettingsWindow(initialTab: .general)
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func toggleMenuBarOnlyMode() {
+        menuBarOnlyMode.toggle()
+        updateUI()
     }
 
     private func openSettingsTab(_ tab: SettingsTab) {
@@ -877,6 +1023,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         stopRecording()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        removeCapsLockEventTap()
     }
 }
 

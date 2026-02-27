@@ -7,6 +7,7 @@ import WhisperShared
 struct SettingsView: View {
     @AppStorage("selectedModel") private var selectedModel = "base.en"
     @AppStorage("showStatusIndicator") private var showStatusIndicator = true
+    @AppStorage("menuBarOnlyMode") private var menuBarOnlyMode = false
     @AppStorage("usePaste") private var usePaste = false
     @AppStorage("alwaysCopyToClipboard") private var alwaysCopyToClipboard = true
     @AppStorage("useCustomStatusPosition") private var useCustomStatusPosition = false
@@ -22,6 +23,7 @@ struct SettingsView: View {
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
     @AppStorage("recordingMode") private var recordingMode = RecordingMode.hold.rawValue
+    @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
     @AppStorage("useCopilotAnalysis") private var useCopilotAnalysis = false
     @AppStorage("copilotBridgeURL") private var copilotBridgeURL = "http://127.0.0.1:32190/analyze"
 
@@ -177,6 +179,24 @@ struct SettingsView: View {
                 Text("Click Record, then press a shortcut with at least one modifier.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Toggle("Hold Caps Lock to dictate", isOn: $enableCapsLockHoldToDictate)
+                Text(
+                    "When enabled, holding Caps Lock starts dictation and releasing it stops dictation."
+                )
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+                HStack {
+                    Text("Quick overlay hide/show")
+                    Spacer()
+                    Text("Cmd+Option+O")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.05))
+                        .cornerRadius(6)
+                }
             }
 
             Section("Auto Stop") {
@@ -200,11 +220,17 @@ struct SettingsView: View {
 
             Section("Output") {
                 Toggle("Show status indicator", isOn: $showStatusIndicator)
+                Toggle("Menu bar only mode (hide overlay)", isOn: $menuBarOnlyMode)
                 Toggle("Use paste instead of typing", isOn: $usePaste)
                 Toggle("Always copy transcription to clipboard", isOn: $alwaysCopyToClipboard)
                 Text("Paste is faster for long text but briefly uses the clipboard.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                Text(
+                    "Menu bar only mode keeps hotkeys and dictation active, but hides the floating status overlay."
+                )
+                .font(.caption)
+                .foregroundColor(.secondary)
             }
 
             Section("AI Analysis") {
