@@ -5,9 +5,9 @@ import Foundation
 public struct TextInjectionRouter {
 
     public enum Strategy: Equatable, Sendable {
-        case axInsert    // Accessibility API insertion (preferred for editors like VS Code)
-        case paste       // Cmd+V paste
-        case type        // Character-by-character CGEvent posting
+        case axInsert  // Accessibility API insertion (preferred for editors like VS Code)
+        case paste  // Cmd+V paste
+        case type  // Character-by-character CGEvent posting
     }
 
     /// Bundle IDs that require AX insertion for proper text injection.

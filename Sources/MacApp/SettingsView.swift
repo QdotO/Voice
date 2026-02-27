@@ -213,9 +213,11 @@ struct SettingsView: View {
                 if useCopilotAnalysis {
                     TextField("Copilot bridge URL", text: $copilotBridgeURL)
                         .textFieldStyle(.roundedBorder)
-                    Text("Used for Themes and Transcript Cleanup. Requires a local Copilot SDK bridge service.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Text(
+                        "Used for Themes and Transcript Cleanup. Requires a local Copilot SDK bridge service."
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 }
             }
 

@@ -36,7 +36,7 @@ public final class Vocabulary {
         "Stand-Up Comedy",
         "Pop Culture",
         "Southern Slang",
-        "Custom"
+        "Custom",
     ]
 
     private init() {
@@ -51,6 +51,18 @@ public final class Vocabulary {
 
         // Initialize with presets if empty
         if terms.isEmpty {
+            loadAllPresets()
+            save()
+        }
+    }
+
+    /// Testable initializer — uses a custom directory for isolation, optionally skips presets
+    init(baseURL: URL, loadPresets: Bool = false) {
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        fileURL = appDir.appendingPathComponent("vocabulary.json")
+        load()
+        if loadPresets && terms.isEmpty {
             loadAllPresets()
             save()
         }

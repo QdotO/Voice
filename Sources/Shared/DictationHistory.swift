@@ -34,11 +34,20 @@ public final class DictationHistory {
         load()
     }
 
+    /// Testable initializer — uses a custom directory for isolation
+    init(baseURL: URL) {
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        fileURL = appDir.appendingPathComponent("dictation-history.json")
+        load()
+    }
+
     public func allEntries() -> [DictationHistoryEntry] {
         entries.sorted { $0.timestamp > $1.timestamp }
     }
 
-    public func addEntry(text: String, durationSeconds: Double, model: String, outputMethod: String) {
+    public func addEntry(text: String, durationSeconds: Double, model: String, outputMethod: String)
+    {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 

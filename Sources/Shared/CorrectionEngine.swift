@@ -30,6 +30,14 @@ public final class CorrectionEngine {
         load()
     }
 
+    /// Testable initializer — uses a custom directory for isolation
+    init(baseURL: URL) {
+        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+        fileURL = appDir.appendingPathComponent("corrections.json")
+        load()
+    }
+
     // MARK: - Learning
 
     /// Learn from a user correction
@@ -38,7 +46,7 @@ public final class CorrectionEngine {
         let corrected = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !original.isEmpty, !corrected.isEmpty else { return }
-        guard original.lowercased() != corrected.lowercased() else { return }
+        guard original != corrected else { return }
 
         // Check if this correction already exists
         if let index = corrections.firstIndex(where: { $0.original == original.lowercased() }) {
@@ -71,8 +79,18 @@ public final class CorrectionEngine {
         var result = text
 
         for correction in corrections {
-            // Case-insensitive replacement while preserving boundaries
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: correction.original))\\b"
+            // Build boundary pattern: use \b when edges are word chars,
+            // otherwise use lookaround for whitespace/string boundaries
+            let escaped = NSRegularExpression.escapedPattern(for: correction.original)
+            let startsWithWordChar =
+                correction.original.first?.isLetter == true
+                || correction.original.first?.isNumber == true
+            let endsWithWordChar =
+                correction.original.last?.isLetter == true
+                || correction.original.last?.isNumber == true
+            let leading = startsWithWordChar ? "\\b" : "(?<=\\s|^)"
+            let trailing = endsWithWordChar ? "\\b" : "(?=\\s|$)"
+            let pattern = "\(leading)\(escaped)\(trailing)"
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
                 result = regex.stringByReplacingMatches(
                     in: result,
@@ -86,7 +104,9 @@ public final class CorrectionEngine {
     }
 
     /// Analyze differences between original and corrected text
-    public func extractDifferences(original: String, corrected: String) -> [(original: String, corrected: String)] {
+    public func extractDifferences(original: String, corrected: String) -> [(
+        original: String, corrected: String
+    )] {
         let originalWords = tokenize(original)
         let correctedWords = tokenize(corrected)
 
@@ -122,7 +142,8 @@ public final class CorrectionEngine {
             guard !isCommonWord(word) else { return false }
 
             // Not already in vocabulary
-            guard !vocab.allTerms.contains(where: { $0.term.lowercased() == word.lowercased() }) else {
+            guard !vocab.allTerms.contains(where: { $0.term.lowercased() == word.lowercased() })
+            else {
                 return false
             }
 
@@ -134,7 +155,8 @@ public final class CorrectionEngine {
 
     private func tokenize(_ text: String) -> [String] {
         // Split on whitespace and punctuation, keeping meaningful tokens
-        let pattern = "[A-Za-z0-9]+([-'.][A-Za-z0-9]+)*"
+        // Includes - ' . / as internal connectors (e.g., CI/CD, Next.js, don't)
+        let pattern = "[A-Za-z0-9]+([-'./][A-Za-z0-9]+)*"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
 
         let range = NSRange(text.startIndex..., in: text)
@@ -155,7 +177,8 @@ public final class CorrectionEngine {
 
         let hasInnerCaps = word.dropFirst().contains(where: { $0.isUppercase })
         let hasPunctuation = word.contains(".") || word.contains("-") || word.contains("/")
-        let isAcronym = word.count >= 2 && word == word.uppercased() && word.allSatisfy { $0.isLetter }
+        let isAcronym =
+            word.count >= 2 && word == word.uppercased() && word.allSatisfy { $0.isLetter }
         let isLong = word.count >= 7
 
         return hasInnerCaps || hasPunctuation || isAcronym || isLong

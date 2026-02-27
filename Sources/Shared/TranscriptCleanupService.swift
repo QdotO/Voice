@@ -43,7 +43,7 @@ public struct TranscriptCleanupService {
         return TranscriptCleanupResult(cleanedText: basicCleanup(trimmed), source: "local")
     }
 
-    private static func cleanupEndpoint(fromAnalyzeEndpoint endpoint: String) -> URL? {
+    static func cleanupEndpoint(fromAnalyzeEndpoint endpoint: String) -> URL? {
         guard var components = URLComponents(string: endpoint) else { return nil }
 
         if components.path.hasSuffix("/analyze") {
@@ -80,14 +80,16 @@ public struct TranscriptCleanupService {
 
         let decoded = try JSONDecoder().decode(CleanupResponse.self, from: data)
         if let error = decoded.error, !error.isEmpty {
-            throw NSError(domain: "TranscriptCleanupService", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: error
-            ])
+            throw NSError(
+                domain: "TranscriptCleanupService", code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: error
+                ])
         }
         return decoded.cleanedText
     }
 
-    private static func basicCleanup(_ text: String) -> String {
+    static func basicCleanup(_ text: String) -> String {
         var value = text
         value = value.replacingOccurrences(of: "\r\n", with: "\n")
         value = value.replacingOccurrences(of: "\r", with: "\n")
@@ -108,4 +110,3 @@ public struct TranscriptCleanupService {
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-
