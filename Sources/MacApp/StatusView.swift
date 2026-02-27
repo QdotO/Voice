@@ -37,46 +37,16 @@ private struct DynamicIslandView: View {
     let lastText: String
     let onAbort: (() -> Void)?
 
-    @State private var isAnimating = false
-
     var body: some View {
         HStack(spacing: 0) {
-            // State Icon / Indicator
-            ZStack {
-                if state.isRecording {
-                    // Recording Indicator
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 12, height: 12)
-                        .opacity(isAnimating ? 1.0 : 0.5)
-                        .animation(
-                            .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
-                            value: isAnimating
-                        )
-                        .onAppear { isAnimating = true }
-                } else if case .processing = state {
-                    // Processing Spinner
-                    ProgressView()
-                        .controlSize(.small)
-                        .colorScheme(.dark)
-                        .scaleEffect(0.8)
-                } else {
-                    // Ready/Idle State
-                    Image(systemName: stateIconName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(stateColor)
-                }
-            }
-            .frame(width: 24, height: 24)
-            .padding(.leading, 12)
-
             // Dynamic Content
             dynamicContent
                 .transition(.opacity.combined(with: .scale))
+                .padding(.leading, 12)
 
             Spacer(minLength: 0)
         }
-        .frame(height: 44)
+        .frame(height: 76)
         .frame(minWidth: state.isRecording ? 180 : 140, maxWidth: state.isRecording ? 180 : 320)
         .background(
             Capsule()
@@ -103,7 +73,7 @@ private struct DynamicIslandView: View {
     private var dynamicContent: some View {
         if state.isRecording {
             IslandWaveformView(level: level)
-                .frame(width: 120, height: 24)
+                .frame(width: 120, height: 48)
                 .padding(.horizontal, 8)
         } else if case .processing = state {
             HStack(spacing: 8) {
@@ -140,26 +110,6 @@ private struct DynamicIslandView: View {
         }
     }
 
-    private var stateIconName: String {
-        switch state {
-        case .loading: return "arrow.down.circle"
-        case .ready: return "mic.fill"
-        case .recording: return "waveform"
-        case .processing: return "gear"
-        case .error: return "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var stateColor: Color {
-        switch state {
-        case .loading: return .orange
-        case .ready: return .white
-        case .recording: return .red
-        case .processing: return .blue
-        case .error: return .red
-        }
-    }
-
     private var borderColors: [Color] {
         if state.isRecording || state == .processing {
             // Golden Hour Scheme: Orange -> Yellow
@@ -178,95 +128,90 @@ private struct IslandWaveformView: View {
 
     var body: some View {
         TimelineView(.animation) { context in
-            ChartDataWrapper(targetLevel: level, date: context.date)
+            let rawTick = Int(context.date.timeIntervalSinceReferenceDate * 12)
+            // Noise gate so room hiss does not look like speech activity.
+            let gatedLevel = max(0, min(1, (level - 0.12) / 0.88))
+            // Keep near-silence mostly static instead of constantly flickering.
+            let tick = gatedLevel < 0.02 ? 0 : rawTick
+
+            Text(ASCIIWavefield.make(level: gatedLevel, tick: tick))
+                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 1.0, green: 0.35, blue: 0.0),
+                            Color(red: 1.0, green: 0.82, blue: 0.05),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .clipped()
         }
     }
 }
 
-private struct ChartDataWrapper: View {
-    let targetLevel: Float
-    let date: Date
+private enum ASCIIWavefield {
+    static func make(level: Float, tick: Int) -> String {
+        let normalized = min(max(level, 0), 1)
+        let cols = 23
+        let rows = 3
+        let charset: [Character] = [
+            " ", ".", ":", "/", "\\", "+", "*", "#", "R", "W", "D", "L", "S",
+        ]
+        if normalized < 0.01 {
+            let blank = String(repeating: " ", count: cols)
+            return [blank, blank, blank].joined(separator: "\n")
+        }
 
-    @State private var currentLevel: Float = 0.0
-    private let barCount = 12
+        let activeBias = 0.03 + (0.82 * Double(normalized))
+        var rng = LCG(state: UInt64(max(tick, 1) * 113 + 19))
+        var lines: [String] = []
+        lines.reserveCapacity(rows)
 
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<barCount, id: \.self) { index in
-                WaveformBar(
-                    index: index,
-                    count: barCount,
-                    level: currentLevel,
-                    date: date
-                )
+        for row in 0..<rows {
+            var line = ""
+            line.reserveCapacity(cols)
+            for col in 0..<cols {
+                let center = abs(Double(col) - Double(cols - 1) / 2.0)
+                let taper = 1.0 - (center / (Double(cols) / 2.0)) * 0.45
+                let phase = sin((Double(col) * 0.55) + (Double(tick) * 0.42) + (Double(row) * 0.9))
+                let wave = (phase * 0.5 + 0.5)
+                let threshold = activeBias * taper * (0.6 + wave * 0.8)
+
+                if rng.nextUnit() < threshold {
+                    let floor = Int(Double(charset.count - 1) * max(0.06, Double(normalized)))
+                    let idx = max(
+                        1,
+                        min(charset.count - 1, floor + rng.nextInt(max(1, charset.count - floor))))
+                    line.append(charset[idx])
+                } else {
+                    line.append(" ")
+                }
             }
+            lines.append(line)
         }
-        .onChange(of: date) { oldDate, newDate in
-            // Frame-by-frame smoothing
-            // If target changes slowly (10Hz), this smoothes the 60Hz tween
-            let diff = targetLevel - currentLevel
-            // Adjust factor: 0.1 is smooth, 0.3 is snappy. 0.2 is good.
-            currentLevel += diff * 0.2
-        }
+
+        return lines.joined(separator: "\n")
     }
 }
 
-private struct WaveformBar: View {
-    let index: Int
-    let count: Int
-    let level: Float
-    let date: Date
+private struct LCG {
+    var state: UInt64
 
-    var body: some View {
-        Capsule()
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color(red: 1.0, green: 0.27, blue: 0.0),  // Burnt Orange
-                        Color(red: 1.0, green: 0.84, blue: 0.0),  // Sunny Yellow
-                    ],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-            )
-            .frame(width: 4, height: height)
+    mutating func next() -> UInt64 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1
+        return state
     }
 
-    private var height: CGFloat {
-        // Logarithmic-ish scaling for audio (makes quiet sounds visible, louds don't clip too hard)
-        let rawLevel = CGFloat(min(max(level, 0.0), 1.0))
-        // Power 0.8 boosts mids slightly
-        let normalized = pow(rawLevel, 0.8)
+    mutating func nextInt(_ upperBound: Int) -> Int {
+        Int(next() % UInt64(upperBound))
+    }
 
-        let center = CGFloat(count) / 2.0
-        let dist = abs(CGFloat(index) - center)
-        let maxDist = center
-
-        let baseHeight: CGFloat = 5
-        let variableHeight: CGFloat = 24 * normalized
-
-        // Constant speed ripple to avoid phase jumps (Jitter Fix #1)
-        // 8.0 rad/s is a steady energetic pulse
-        let time = date.timeIntervalSinceReferenceDate
-        let speed = 8.0
-
-        // Add a secondary wave that moves faster but is quieter
-        // This adds "shimmer" without breaking phase
-        let wave1 = sin(time * speed + Double(index) * 0.6)
-        let wave2 = sin(time * speed * 2.3 + Double(index) * 0.8) * 0.5
-
-        // Combine waves
-        let ripple = (wave1 + wave2) / 1.5 * 0.5 + 0.5
-
-        // Shape factor (tapering to edges)
-        let shapeFactor = 1.0 - (dist / maxDist) * 0.5
-
-        // Breathing animation:
-        // Idle: small amplitude (2.0)
-        // Active: adds jitter/life but scales smoothly with level
-        let breathing = CGFloat(ripple) * (2.0 + 8.0 * normalized)
-
-        return baseHeight + (variableHeight * shapeFactor) + breathing
+    mutating func nextUnit() -> Double {
+        Double(next() % 10_000) / 10_000.0
     }
 }
 
