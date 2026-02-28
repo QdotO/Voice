@@ -8,6 +8,13 @@ struct ContentView: View {
         ZStack {
             background
 
+            // ASCII animation overlay — appears during LISTENING (fire) and PROCESSING (noise)
+            ASCIIOverlayView(
+                amplitude: viewModel.audioLevel,
+                isRecording: viewModel.isRecording,
+                isBusy: viewModel.isBusy
+            )
+
             VStack(spacing: 20) {
                 header
                 dictationCard
@@ -23,7 +30,7 @@ struct ContentView: View {
             colors: [
                 Color(red: 0.07, green: 0.05, blue: 0.14),
                 Color(red: 0.08, green: 0.08, blue: 0.22),
-                Color(red: 0.1, green: 0.15, blue: 0.3)
+                Color(red: 0.1, green: 0.15, blue: 0.3),
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing

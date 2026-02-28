@@ -10,8 +10,11 @@ fi
 
 echo "Resetting TCC permissions for ${bundle_id}..."
 
-tccutil reset Microphone "${bundle_id}" || true
-tccutil reset Accessibility "${bundle_id}" || true
-tccutil reset AppleEvents "${bundle_id}" || true
+# sudo is required to clear the system-level TCC database entries;
+# without it the Accessibility grant may silently persist or become
+# un-toggleable in System Settings → Privacy & Security → Accessibility.
+sudo tccutil reset Microphone "${bundle_id}" || true
+sudo tccutil reset Accessibility "${bundle_id}" || true
+sudo tccutil reset AppleEvents "${bundle_id}" || true
 
 echo "Done. Relaunch the app and re-approve permissions when prompted."

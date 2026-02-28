@@ -9,9 +9,11 @@
 /* Begin PBXBuildFile section */
 		4F25CE2071709A54D1F4FCC5 /* WhisperShared in Frameworks */ = {isa = PBXBuildFile; productRef = A3D1A0EDD6D7D479F1294EDA /* WhisperShared */; };
 		7549995A1850AC4713E9DBE1 /* WhisperShared in Frameworks */ = {isa = PBXBuildFile; productRef = E60F16EFDF6D0D264E812E2E /* WhisperShared */; };
+		8A16B892A21CBD3318A39F9E /* ASCIIOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B11CB8491D6F9245D2AF4BC3 /* ASCIIOverlayView.swift */; };
 		8FB62D80C05654B9D90DDFE9 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA05609D6989844D17B55750 /* KeyboardViewController.swift */; };
 		9276B829A096F21F8D9EFE81 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4540A16E58ED1797D0166880 /* ContentView.swift */; };
 		95230E4858959A13229FC101 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8D7C17D9218A8A9012D295EE /* Assets.xcassets */; };
+		9557E00D2E62E78CA32FFA84 /* ASCIICanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DDBF83174493D0B9B5B2FB /* ASCIICanvasView.swift */; };
 		A8DDEAA7636A33B96DFFA532 /* WhisperKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F1451D028FDF668BD6F97C03 /* WhisperKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C14E767FBF90C558BE646B55 /* WhisperiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 947CA0BFAEAEE1130F5EA87A /* WhisperiOSApp.swift */; };
 		C2F4F896349C985032584BB7 /* DictationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BEA2C9D360E8E75E979E62D /* DictationViewModel.swift */; };
@@ -51,6 +53,8 @@
 		85D7E06CA94EC1E1474E1E82 /* WhisperiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WhisperiOS.entitlements; sourceTree = "<group>"; };
 		8D7C17D9218A8A9012D295EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		947CA0BFAEAEE1130F5EA87A /* WhisperiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperiOSApp.swift; sourceTree = "<group>"; };
+		B11CB8491D6F9245D2AF4BC3 /* ASCIIOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ASCIIOverlayView.swift; sourceTree = "<group>"; };
+		B9DDBF83174493D0B9B5B2FB /* ASCIICanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ASCIICanvasView.swift; sourceTree = "<group>"; };
 		E4E1E27C83F2A2BB3C74732F /* Voice */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Voice; path = .; sourceTree = SOURCE_ROOT; };
 		F1451D028FDF668BD6F97C03 /* WhisperKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = WhisperKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA05609D6989844D17B55750 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
@@ -96,6 +100,8 @@
 		3F133717A0EE78D43AF7AD26 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				B9DDBF83174493D0B9B5B2FB /* ASCIICanvasView.swift */,
+				B11CB8491D6F9245D2AF4BC3 /* ASCIIOverlayView.swift */,
 				8D7C17D9218A8A9012D295EE /* Assets.xcassets */,
 				4540A16E58ED1797D0166880 /* ContentView.swift */,
 				1BEA2C9D360E8E75E979E62D /* DictationViewModel.swift */,
@@ -236,6 +242,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9557E00D2E62E78CA32FFA84 /* ASCIICanvasView.swift in Sources */,
+				8A16B892A21CBD3318A39F9E /* ASCIIOverlayView.swift in Sources */,
 				9276B829A096F21F8D9EFE81 /* ContentView.swift in Sources */,
 				C2F4F896349C985032584BB7 /* DictationViewModel.swift in Sources */,
 				C14E767FBF90C558BE646B55 /* WhisperiOSApp.swift in Sources */,

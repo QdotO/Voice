@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceMemosWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
+    private var immersiveModeWindow: NSWindow?
+    private var immersiveModeMenuItem: NSMenuItem?
+    private var waveformWindow: NSWindow?
+    private var processingBarWindow: NSWindow?
+    private var immersiveCanvas: ASCIICanvasView?
     private var hotkeyMonitor: NSObjectProtocol?
     private var capsLockEventTap: CFMachPort?
     private var capsLockRunLoopSource: CFRunLoopSource?
@@ -88,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @AppStorage("selectedModel") private var selectedModel = "base.en"
     @AppStorage("showStatusIndicator") private var showStatusIndicator = true
     @AppStorage("menuBarOnlyMode") private var menuBarOnlyMode = false
+    @AppStorage("immersiveModeEnabled") private var immersiveModeEnabled = false
     @AppStorage("usePaste") private var usePaste = false
     @AppStorage("alwaysCopyToClipboard") private var alwaysCopyToClipboard = true
     @AppStorage("useCustomStatusPosition") private var useCustomStatusPosition = false
@@ -121,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onAudioLevel: { [weak self] level in
                 self?.statusViewModel.level = level
+                self?.immersiveCanvas?.amplitude = level
                 self?.handleAudioLevel(level)
             },
             onTranscriberError: { error in
@@ -190,6 +197,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarOnlyItem.state = menuBarOnlyMode ? .on : .off
         menu.addItem(menuBarOnlyItem)
         self.menuBarOnlyItem = menuBarOnlyItem
+        let immersiveItem = NSMenuItem(
+            title: "Immersive Mode",
+            action: #selector(toggleImmersiveMode),
+            keyEquivalent: "i"
+        )
+        immersiveItem.keyEquivalentModifierMask = [.command, .shift]
+        immersiveItem.target = self
+        immersiveItem.state = immersiveModeEnabled ? .on : .off
+        menu.addItem(immersiveItem)
+        self.immersiveModeMenuItem = immersiveItem
+
         menu.addItem(NSMenuItem.separator())
 
         let voiceMemosItem = NSMenuItem(
@@ -911,9 +929,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Whisper")
         }
 
-        // Update status window
+        // Update status window — suppress when immersive mode is active (waveform bar replaces it)
         if let window = statusWindow {
-            let shouldShowOverlay = showStatusIndicator && !menuBarOnlyMode
+            let shouldShowOverlay = showStatusIndicator && !menuBarOnlyMode && !immersiveModeEnabled
             if shouldShowOverlay {
                 window.orderFront(nil)
             } else {
@@ -922,6 +940,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menuBarOnlyItem?.state = menuBarOnlyMode ? .on : .off
+
+        // Immersive mode: fire canvas only while recording; waveform bar shown during recording
+        if immersiveModeEnabled {
+            if state.isRecording {
+                showImmersiveWindow()
+                showWaveformWindow()
+                processingBarWindow?.orderOut(nil)
+            } else if case .processing = state {
+                immersiveModeWindow?.orderOut(nil)
+                waveformWindow?.orderOut(nil)
+                showProcessingBar()
+            } else {
+                immersiveModeWindow?.orderOut(nil)
+                waveformWindow?.orderOut(nil)
+                processingBarWindow?.orderOut(nil)
+            }
+        }
     }
 
     private func updateHistoryMenu() {
@@ -971,6 +1006,133 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleMenuBarOnlyMode() {
         menuBarOnlyMode.toggle()
         updateUI()
+    }
+
+    @objc private func toggleImmersiveMode() {
+        immersiveModeEnabled.toggle()
+        immersiveModeMenuItem?.state = immersiveModeEnabled ? .on : .off
+        // Actual show/hide is driven by updateUI via state changes
+        if !immersiveModeEnabled {
+            immersiveModeWindow?.orderOut(nil)
+            waveformWindow?.orderOut(nil)
+        }
+        updateUI()
+    }
+
+    private func showImmersiveWindow() {
+        if immersiveModeWindow == nil {
+            setupImmersiveWindow()
+        }
+        immersiveModeWindow?.orderFrontRegardless()
+    }
+
+    private func setupImmersiveWindow() {
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.frame
+        // Slightly shorter; full width, dense character grid.
+        let windowHeight = CGFloat(85)
+        let windowWidth = screenFrame.width
+        let windowFrame = NSRect(
+            x: screenFrame.minX,
+            y: screenFrame.minY,
+            width: windowWidth,
+            height: windowHeight
+        )
+
+        let canvas = ASCIICanvasView(mode: .fire)
+        canvas.frame = NSRect(origin: .zero, size: windowFrame.size)
+        canvas.autoresizingMask = [.width, .height]
+        self.immersiveCanvas = canvas
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.isReleasedWhenClosed = false
+        window.contentView = canvas
+        self.immersiveModeWindow = window
+    }
+
+    private func showWaveformWindow() {
+        if waveformWindow == nil { setupWaveformWindow() }
+        waveformWindow?.orderFrontRegardless()
+    }
+
+    private func setupWaveformWindow() {
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.frame  // full frame, above menu bar
+        let windowWidth = screenFrame.width / 3.0
+        let windowHeight = CGFloat(18)
+        // Flush with very top of display (our window level clears the menu bar)
+        let windowFrame = NSRect(
+            x: screenFrame.maxX - windowWidth,
+            y: screenFrame.maxY - windowHeight,
+            width: windowWidth,
+            height: windowHeight
+        )
+
+        let hostingView = NSHostingView(
+            rootView: ImmersiveWaveformView(viewModel: statusViewModel)
+        )
+        hostingView.frame = NSRect(origin: .zero, size: windowFrame.size)
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.isReleasedWhenClosed = false
+        window.contentView = hostingView
+        self.waveformWindow = window
+    }
+
+    private func showProcessingBar() {
+        if processingBarWindow == nil { setupProcessingBarWindow() }
+        processingBarWindow?.orderFrontRegardless()
+    }
+
+    private func setupProcessingBarWindow() {
+        guard let screen = NSScreen.main else { return }
+        let sf = screen.frame
+        let barHeight = CGFloat(6)
+        let windowFrame = NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: barHeight)
+
+        let hostingView = NSHostingView(rootView: ImmersiveProcessingView())
+        hostingView.frame = NSRect(origin: .zero, size: windowFrame.size)
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.isReleasedWhenClosed = false
+        window.contentView = hostingView
+        self.processingBarWindow = window
     }
 
     private func openSettingsTab(_ tab: SettingsTab) {

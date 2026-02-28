@@ -8,6 +8,7 @@ final class DictationViewModel: ObservableObject {
     @Published var lastTranscript = ""
     @Published var errorMessage = ""
     @Published var stateLabel = "Loading model"
+    @Published var audioLevel: Float = 0
 
     private let audioCapture = AudioCapture()
     private let transcriber = Transcriber()
@@ -32,6 +33,9 @@ final class DictationViewModel: ObservableObject {
             transcriber: transcriber,
             onAudioError: { [weak self] error in
                 self?.errorMessage = error
+            },
+            onAudioLevel: { [weak self] level in
+                self?.audioLevel = level
             },
             onTranscriberError: { [weak self] error in
                 self?.errorMessage = error
