@@ -5,6 +5,7 @@ import AppKit
 enum AnimationMode: Equatable {
     case fire
     case noise
+    case scan  // processing: ASCII scanner beam using fire chars and palette
 }
 
 // MARK: - Math Helpers
@@ -241,6 +242,8 @@ final class ASCIICanvasView: NSView {
             let rate = dt * 8.0  // faster snap for noise mode
             noiseSpeed = lerpF(noiseSpeed, tSpeed, rate)
             noiseWarp = lerpF(noiseWarp, tWarp, rate)
+        case .scan:
+            break  // scan is time-driven; no audio-reactive params
         }
     }
 
@@ -253,6 +256,7 @@ final class ASCIICanvasView: NSView {
         switch mode {
         case .fire: drawFire(t: t)
         case .noise: drawNoise(t: t)
+        case .scan: drawScan(t: t)
         }
     }
 
@@ -311,6 +315,77 @@ final class ASCIICanvasView: NSView {
                     at: CGPoint(x: CGFloat(c) * cellW, y: CGFloat(visibleRows - 1 - r) * cellH),
                     withAttributes: fireAttrs[Int(heat)]
                 )
+            }
+        }
+    }
+
+    // MARK: Scan Renderer (processing mode)
+    //
+    // A sweep beam of fire chars (same chars + palette as fire mode) that
+    // ping-pongs across the canvas. Visually connects to the fire animation
+    // that just ended — same characters, same orange/yellow colors, same window.
+
+    private func drawScan(t: Float) {
+        let cols = Int(ceil(bounds.width / cellW))
+        let rows = Int(ceil(bounds.height / cellH))
+        guard cols > 0, rows > 0 else { return }
+
+        // Beam sweeps ping-pong: one full crossing every 2 s (4 s round-trip)
+        let period: Float = 4.0
+        let phase = (t / period).truncatingRemainder(dividingBy: 1.0)
+        let pingPong = phase < 0.5 ? phase * 2.0 : 2.0 - phase * 2.0  // 0→1→0
+        let beamCenterCol = pingPong * Float(cols)
+        let beamHalfW = Float(cols) * 0.08  // core half-width in columns
+        let haloHalfW = beamHalfW * 2.2  // soft halo extends beyond the core
+
+        let charCount = fireChars.count  // 15 chars:  .,'\'`^~+|*#%@W
+
+        for row in 0..<rows {
+            for col in 0..<cols {
+                let dist = abs(Float(col) - beamCenterCol)
+
+                if dist < beamHalfW {
+                    // ── Beam core: dense bright fire chars ───────────────────
+                    let innerT = 1.0 - dist / beamHalfW  // 1.0 at center
+                    let n = valueNoise2D(Float(col) * 0.45 + t * 1.1, Float(row) * 0.55)
+                    // Pick from dense chars (index 8..14: +|*#%@W)
+                    let ci = 8 + Int(n * Float(charCount - 8))
+                    let ch = fireChars[min(ci, charCount - 1)]
+                    guard ch != " " else { continue }
+                    let heat = Int(innerT * 130 + 125)  // 125..255 → bright orange/yellow
+                    (String(ch) as NSString).draw(
+                        at: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(rows - 1 - row) * cellH),
+                        withAttributes: fireAttrs[min(heat, 255)]
+                    )
+
+                } else if dist < haloHalfW {
+                    // ── Soft halo: medium chars, darkening outward ────────────
+                    let haloT = 1.0 - (dist - beamHalfW) / beamHalfW  // 1→0 outward
+                    let n = valueNoise2D(Float(col) * 0.35 + t * 0.7, Float(row) * 0.4 + 5.3)
+                    guard n > 0.35 else { continue }
+                    let ci = 5 + Int(haloT * 4.0)  // indices 5..8: `^~+
+                    let ch = fireChars[min(ci, charCount - 1)]
+                    guard ch != " " else { continue }
+                    let heat = Int(haloT * 65 + 45)  // 45..110 → dark orange
+                    (String(ch) as NSString).draw(
+                        at: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(rows - 1 - row) * cellH),
+                        withAttributes: fireAttrs[min(heat, 255)]
+                    )
+
+                } else {
+                    // ── Background embers: sparse, very dim ──────────────────
+                    let n1 = valueNoise2D(Float(col) * 0.19 + 11.7, Float(row) * 0.21 + t * 0.04)
+                    guard n1 > 0.62 else { continue }
+                    let n2 = valueNoise2D(Float(col) * 0.34 + t * 0.07, Float(row) * 0.38 + 8.2)
+                    let ci = 2 + Int(n2 * 4.0)  // indices 2..5: .,'\'`
+                    let ch = fireChars[min(ci, charCount - 1)]
+                    guard ch != " " else { continue }
+                    let heat = Int(n1 * 35 + 8)  // 8..43 → barely visible embers
+                    (String(ch) as NSString).draw(
+                        at: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(rows - 1 - row) * cellH),
+                        withAttributes: fireAttrs[min(heat, 255)]
+                    )
+                }
             }
         }
     }

@@ -941,16 +941,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarOnlyItem?.state = menuBarOnlyMode ? .on : .off
 
-        // Immersive mode: fire canvas only while recording; waveform bar shown during recording
+        // Immersive mode: fire canvas while recording; scan mode (same window) while processing
         if immersiveModeEnabled {
             if state.isRecording {
+                immersiveCanvas?.mode = .fire
+                restoreImmersiveWindowHeight()  // snap back to full 85px before showing
                 showImmersiveWindow()
                 showWaveformWindow()
                 processingBarWindow?.orderOut(nil)
             } else if case .processing = state {
-                immersiveModeWindow?.orderOut(nil)
+                // Switch mode in-place — window stays; no flash, no window swap
+                immersiveCanvas?.mode = .scan
                 waveformWindow?.orderOut(nil)
-                showProcessingBar()
+                processingBarWindow?.orderOut(nil)
+                showScanBar()
             } else {
                 immersiveModeWindow?.orderOut(nil)
                 waveformWindow?.orderOut(nil)
@@ -1024,6 +1028,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupImmersiveWindow()
         }
         immersiveModeWindow?.orderFrontRegardless()
+    }
+
+    /// Immediately pin the window to the collapsed scan-bar height, then animate a quick rise
+    /// from 0 → 9 px so the bar "grows in" rather than crashing down from 85 px.
+    private func showScanBar() {
+        if immersiveModeWindow == nil { setupImmersiveWindow() }
+        guard let window = immersiveModeWindow, let screen = NSScreen.main else { return }
+        let sf = screen.frame
+        // Start at zero height (invisible) so there is no flash of the full grid
+        window.setFrame(NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 0), display: false)
+        window.orderFrontRegardless()
+        // Animate in to the final 9 px sliver
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.35
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().setFrame(
+                NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 9), display: true)
+        }
+    }
+
+    /// Immediately restore the immersive window to its full 85 px height for recording.
+    private func restoreImmersiveWindowHeight() {
+        guard let window = immersiveModeWindow, let screen = NSScreen.main else { return }
+        let sf = screen.frame
+        let fullFrame = NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 85)
+        // Non-animated snap so the fire starts at full height the moment recording begins
+        window.setFrame(fullFrame, display: false)
     }
 
     private func setupImmersiveWindow() {
