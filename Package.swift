@@ -14,12 +14,14 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
         .package(url: "https://github.com/soffes/HotKey.git", from: "0.2.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
     ],
     targets: [
         .target(
             name: "WhisperShared",
             dependencies: [
-                "WhisperKit"
+                "WhisperKit",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/Shared"
         ),

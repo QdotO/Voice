@@ -1,14 +1,15 @@
 import Foundation
+import OSLog
 
 /// A vocabulary term with metadata
-public struct VocabTerm: Codable, Identifiable, Hashable {
+public struct VocabTerm: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var term: String
     public var category: String
     public var enabled: Bool
 
-    public init(term: String, category: String, enabled: Bool = true) {
-        self.id = UUID()
+    public init(id: UUID = UUID(), term: String, category: String, enabled: Bool = true) {
+        self.id = id
         self.term = term
         self.category = category
         self.enabled = enabled
@@ -18,9 +19,10 @@ public struct VocabTerm: Codable, Identifiable, Hashable {
 /// Manages custom vocabulary for transcription context
 public final class Vocabulary {
     public static let shared = Vocabulary()
+    private static let logger = Logger(subsystem: "Whisper", category: "Vocabulary")
 
     private var terms: [VocabTerm] = []
-    private let fileURL: URL
+    private let storage: SQLiteV2Store
 
     /// All defined categories
     public static let categories = [
@@ -40,13 +42,7 @@ public final class Vocabulary {
     ]
 
     private init() {
-        let baseURL = SharedStorage.baseDirectory()
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-
-        // Create directory if needed
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-
-        fileURL = appDir.appendingPathComponent("vocabulary.json")
+        storage = SQLiteV2Store.shared()
         load()
 
         // Initialize with presets if empty
@@ -58,9 +54,7 @@ public final class Vocabulary {
 
     /// Testable initializer — uses a custom directory for isolation, optionally skips presets
     init(baseURL: URL, loadPresets: Bool = false) {
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        fileURL = appDir.appendingPathComponent("vocabulary.json")
+        storage = SQLiteV2Store.shared(baseURL: baseURL)
         load()
         if loadPresets && terms.isEmpty {
             loadAllPresets()
@@ -90,7 +84,7 @@ public final class Vocabulary {
 
         // Whisper works best with shorter prompts
         let maxTerms = 50
-        let selected = Array(enabled.shuffled().prefix(maxTerms))
+        let selected = Array(enabled.prefix(maxTerms))
         return selected.joined(separator: ", ")
     }
 
@@ -134,21 +128,20 @@ public final class Vocabulary {
     // MARK: - Persistence
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let data = try Data(contentsOf: fileURL)
-            terms = try JSONDecoder().decode([VocabTerm].self, from: data)
+            terms = try storage.fetchVocabularyTerms()
         } catch {
-            print("Failed to load vocabulary: \(error)")
+            Self.logger.error(
+                "Failed to load vocabulary: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func save() {
         do {
-            let data = try JSONEncoder().encode(terms)
-            try data.write(to: fileURL)
+            try storage.replaceVocabularyTerms(terms)
         } catch {
-            print("Failed to save vocabulary: \(error)")
+            Self.logger.error(
+                "Failed to save vocabulary: \(error.localizedDescription, privacy: .public)")
         }
     }
 

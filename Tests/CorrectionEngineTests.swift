@@ -25,6 +25,15 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertEqual(result, "hello world")
     }
 
+    func testAllCorrectionsReturnsStoredRecords() {
+        engine.learn(original: "wrld", corrected: "world")
+        let corrections = engine.allCorrections()
+
+        XCTAssertEqual(corrections.count, 1)
+        XCTAssertEqual(corrections.first?.originalText, "wrld")
+        XCTAssertEqual(corrections.first?.correctedText, "world")
+    }
+
     func testLearnEmptyOriginalIsIgnored() {
         engine.learn(original: "", corrected: "world")
         let result = engine.apply(to: "hello world")
@@ -208,6 +217,26 @@ final class CorrectionEngineTests: XCTestCase {
         let engine2 = CorrectionEngine(baseURL: tempDir)
         let result = engine2.apply(to: "hello wrld")
         XCTAssertEqual(result, "hello world")
+    }
+
+    func testRemoveCorrectionDeletesByID() {
+        engine.learn(original: "wrld", corrected: "world")
+        let correction = try! XCTUnwrap(engine.allCorrections().first)
+
+        engine.removeCorrection(id: correction.id)
+
+        XCTAssertTrue(engine.allCorrections().isEmpty)
+        XCTAssertEqual(engine.apply(to: "hello wrld"), "hello wrld")
+    }
+
+    func testClearCorrectionsEmptiesEngine() {
+        engine.learn(original: "wrld", corrected: "world")
+        engine.learn(original: "teh", corrected: "the")
+
+        engine.clearCorrections()
+
+        XCTAssertTrue(engine.allCorrections().isEmpty)
+        XCTAssertEqual(engine.apply(to: "wrld teh"), "wrld teh")
     }
 
     // MARK: - Edge Cases (capitalization)

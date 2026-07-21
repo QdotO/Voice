@@ -1,6 +1,7 @@
 import Foundation
+import OSLog
 
-public struct DictationHistoryEntry: Codable, Identifiable, Equatable {
+public struct DictationHistoryEntry: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public let text: String
     public let timestamp: Date
@@ -8,10 +9,17 @@ public struct DictationHistoryEntry: Codable, Identifiable, Equatable {
     public let model: String
     public let outputMethod: String
 
-    public init(text: String, durationSeconds: Double, model: String, outputMethod: String) {
-        self.id = UUID()
+    public init(
+        id: UUID = UUID(),
+        text: String,
+        timestamp: Date = Date(),
+        durationSeconds: Double,
+        model: String,
+        outputMethod: String
+    ) {
+        self.id = id
         self.text = text
-        self.timestamp = Date()
+        self.timestamp = timestamp
         self.durationSeconds = durationSeconds
         self.model = model
         self.outputMethod = outputMethod
@@ -21,24 +29,20 @@ public struct DictationHistoryEntry: Codable, Identifiable, Equatable {
 public final class DictationHistory {
     public static let shared = DictationHistory()
     public static let didChangeNotification = Notification.Name("DictationHistoryDidChange")
+    private static let logger = Logger(subsystem: "Whisper", category: "DictationHistory")
 
     private var entries: [DictationHistoryEntry] = []
-    private let fileURL: URL
+    private let storage: SQLiteV2Store
     private let maxEntries = 100
 
     private init() {
-        let baseURL = SharedStorage.baseDirectory()
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        fileURL = appDir.appendingPathComponent("dictation-history.json")
+        storage = SQLiteV2Store.shared()
         load()
     }
 
     /// Testable initializer — uses a custom directory for isolation
     init(baseURL: URL) {
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        fileURL = appDir.appendingPathComponent("dictation-history.json")
+        storage = SQLiteV2Store.shared(baseURL: baseURL)
         load()
     }
 
@@ -83,22 +87,19 @@ public final class DictationHistory {
     // MARK: - Persistence
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let data = try Data(contentsOf: fileURL)
-            entries = try JSONDecoder().decode([DictationHistoryEntry].self, from: data)
+            entries = try storage.fetchHistoryEntries()
         } catch {
-            print("Failed to load history: \(error)")
+            Self.logger.error("Failed to load history: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func save() {
         do {
-            let data = try JSONEncoder().encode(entries)
-            try data.write(to: fileURL)
+            try storage.replaceHistoryEntries(entries)
             NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
         } catch {
-            print("Failed to save history: \(error)")
+            Self.logger.error("Failed to save history: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

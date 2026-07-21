@@ -24,8 +24,6 @@ struct SettingsView: View {
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
     @AppStorage("recordingMode") private var recordingMode = RecordingMode.hold.rawValue
     @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
-    @AppStorage("useCopilotAnalysis") private var useCopilotAnalysis = false
-    @AppStorage("copilotBridgeURL") private var copilotBridgeURL = "http://127.0.0.1:32190/analyze"
 
     @State private var selectedCategory: String?
     @State private var searchText = ""
@@ -33,6 +31,7 @@ struct SettingsView: View {
     @State private var newTerm = ""
     @State private var newCategory = "Custom"
     @State private var requestAccessibilityToggle = false
+    @State private var showAdvancedModelOptions = false
 
     private let vocab = Vocabulary.shared
     @State private var selectedTab: SettingsTab
@@ -233,20 +232,6 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
             }
 
-            Section("AI Analysis") {
-                Toggle("Use Copilot analysis", isOn: $useCopilotAnalysis)
-
-                if useCopilotAnalysis {
-                    TextField("Copilot bridge URL", text: $copilotBridgeURL)
-                        .textFieldStyle(.roundedBorder)
-                    Text(
-                        "Used for Themes and Transcript Cleanup. Requires a local Copilot SDK bridge service."
-                    )
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                }
-            }
-
             Section("Appearance") {
                 Toggle("Customize status location", isOn: $useCustomStatusPosition)
 
@@ -277,47 +262,72 @@ struct SettingsView: View {
 
     private var modelTab: some View {
         Form {
-            Section("Whisper Model") {
-                Picker("Model", selection: $selectedModel) {
-                    Section("English (Faster)") {
-                        Text("Tiny").tag("tiny.en")
-                        Text("Base").tag("base.en")
-                        Text("Small").tag("small.en")
-                    }
-                    Section("Multilingual") {
-                        Text("Tiny").tag("tiny")
-                        Text("Base").tag("base")
-                        Text("Small").tag("small")
-                        Text("Large v3").tag("large-v3")
+            Section("Transcription Profile") {
+                Picker("Profile", selection: selectedProfileBinding) {
+                    ForEach(ModelProfile.allCases, id: \.self) { profile in
+                        Text(profile.displayName).tag(profile)
                     }
                 }
+                .pickerStyle(.segmented)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    modelDescription
+                    Text(currentModelSelection.profile.detailText)
                         .font(.callout)
                         .foregroundColor(.secondary)
+
+                    LabeledContent("Mapped model") {
+                        Text(currentModelSelection.profile.defaultModelName)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+
+                    if let override = currentModelSelection.rawModelOverride {
+                        LabeledContent("Debug override") {
+                            Text(override)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.orange)
+                        }
+                    }
                 }
                 .padding(.top, 8)
+            }
+
+            Section("Advanced / Debug") {
+                DisclosureGroup("Raw model override", isExpanded: $showAdvancedModelOptions) {
+                    TextField("Use profile default", text: rawModelOverrideBinding)
+                        .textFieldStyle(.roundedBorder)
+                    Text(
+                        "Leave this blank for normal use. Only set a raw WhisperKit model name here when you need to debug a specific override."
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
     }
 
-    @ViewBuilder
-    private var modelDescription: some View {
-        switch selectedModel {
-        case "tiny.en", "tiny":
-            Text("Fastest, lowest accuracy. Good for quick notes.")
-        case "base.en", "base":
-            Text("Balanced speed and accuracy. Recommended for most use.")
-        case "small.en", "small":
-            Text("Better accuracy, slower. Good for technical content.")
-        case "large-v3":
-            Text("Best accuracy, slowest. Best for complex vocabulary.")
-        default:
-            EmptyView()
-        }
+    private var currentModelSelection: (profile: ModelProfile, rawModelOverride: String?) {
+        LegacyAppPreferencesSettingsStore.resolveLegacyModel(selectedModel)
+    }
+
+    private var selectedProfileBinding: Binding<ModelProfile> {
+        Binding(
+            get: { currentModelSelection.profile },
+            set: { selectedModel = $0.defaultModelName }
+        )
+    }
+
+    private var rawModelOverrideBinding: Binding<String> {
+        Binding(
+            get: { currentModelSelection.rawModelOverride ?? "" },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                selectedModel =
+                    trimmed.isEmpty ? currentModelSelection.profile.defaultModelName : trimmed
+            }
+        )
     }
 
     private var hotkeyDisplay: String {
@@ -582,8 +592,8 @@ struct SettingsView: View {
                 }
 
                 Toggle("Re-request Accessibility permission", isOn: $requestAccessibilityToggle)
-                    .onChange(of: requestAccessibilityToggle) { value in
-                        if value {
+                    .onChange(of: requestAccessibilityToggle) {
+                        if requestAccessibilityToggle {
                             TextInjector.requestAccessibility()
                             requestAccessibilityToggle = false
                         }

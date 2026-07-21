@@ -11,21 +11,11 @@ struct MainView: View {
     let openVoiceMemos: () -> Void
     let openVocabulary: () -> Void
 
+    @AppStorage("selectedModel") private var selectedModel = "base.en"
     @AppStorage("showStatusIndicator") private var showStatusIndicator = true
     @AppStorage("recordingMode") private var recordingMode = "hold"
-    @AppStorage("autoStopEnabled") private var autoStopEnabled = true
-    @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
-    @AppStorage("useCopilotAnalysis") private var useCopilotAnalysis = false
-    @AppStorage("copilotBridgeURL") private var copilotBridgeURL = "http://127.0.0.1:32190/analyze"
 
     @State private var recentDictations: [DictationHistoryEntry] = []
-    @State private var analysis = ThemesAnalysis.placeholder
-    @State private var isAnalyzing = false
-    @State private var lastAnalysisDate: Date?
-    @State private var bridgeStatus: BridgeStatus = .unknown
-    @State private var bridgeError: String?
-    @State private var bridgeModel: String?
-    @State private var isCheckingBridge = false
 
     private let history = DictationHistory.shared
 
@@ -41,36 +31,21 @@ struct MainView: View {
                     dictationTile
                     voiceMemoTile
                     historyTile
-                    statsTile
-                    themesTile
-                    vocabularyTile
+                    accuracyTile
                 }
 
                 Spacer()
             }
             .padding(24)
         }
-        .frame(minWidth: 820, minHeight: 560)
+        .frame(minWidth: 760, minHeight: 520)
         .onAppear {
             refreshHistory()
-            refreshAnalysis()
-            checkBridgeHealth()
-        }
-        .onChange(of: useCopilotAnalysis) { _ in
-            checkBridgeHealth()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: DictationHistory.didChangeNotification)
         ) { _ in
             refreshHistory()
-            refreshAnalysisDebounced()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: VoiceMemoStore.didChangeNotification))
-        { _ in
-            refreshAnalysisDebounced()
-        }
-        .onReceive(bridgeTimer) { _ in
-            checkBridgeHealth()
         }
     }
 
@@ -86,7 +61,7 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Whisper")
                     .font(.system(size: 26, weight: .semibold))
-                Text("Bento dashboard for dictation and memos")
+                Text("Offline dictation and voice memos")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -94,16 +69,9 @@ struct MainView: View {
             Spacer()
 
             HStack(spacing: 12) {
-                bridgeBadge
-
-                Button("Reconnect") {
-                    checkBridgeHealth()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isCheckingBridge)
-
                 Button("Settings") { openSettings() }
+                    .buttonStyle(.bordered)
+                Button("History") { openHistory() }
                     .buttonStyle(.bordered)
                 Button("Voice Memos") { openVoiceMemos() }
                     .buttonStyle(.bordered)
@@ -111,25 +79,8 @@ struct MainView: View {
         }
     }
 
-    private var bridgeBadge: some View {
-        let status = bridgeStatus
-        return HStack(spacing: 6) {
-            Circle()
-                .fill(status.color)
-                .frame(width: 8, height: 8)
-            Text(statusLabel)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(10)
-        .help(bridgeError ?? status.helpText)
-    }
-
     private var dictationTile: some View {
-        BentoTile(title: "Quick Dictation", subtitle: statusViewModel.state.label) {
+        BentoTile(title: "Dictation", subtitle: statusViewModel.state.label) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     Button(action: toggleDictation) {
@@ -163,7 +114,7 @@ struct MainView: View {
     }
 
     private var voiceMemoTile: some View {
-        BentoTile(title: "Quick Voice Memo", subtitle: voiceMemoSubtitle) {
+        BentoTile(title: "Voice Memos", subtitle: voiceMemoSubtitle) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     CompactWaveform(level: voiceMemoManager.recordingLevel)
@@ -216,7 +167,7 @@ struct MainView: View {
     }
 
     private var historyTile: some View {
-        BentoTile(title: "Recent Dictations", subtitle: "Last 5") {
+        BentoTile(title: "History", subtitle: "Recent transcriptions") {
             VStack(alignment: .leading, spacing: 10) {
                 if recentDictations.isEmpty {
                     Text("No dictations yet.")
@@ -225,7 +176,7 @@ struct MainView: View {
                 } else {
                     ForEach(recentDictations.prefix(5)) { entry in
                         HStack {
-                            Text(entry.text.prefix(42))
+                            Text(String(entry.text.prefix(42)))
                                 .font(.caption)
                                 .lineLimit(1)
                             Spacer()
@@ -236,6 +187,10 @@ struct MainView: View {
                     }
                 }
 
+                Text("Corrections are learned automatically from accepted edits and reused in future prompts.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
                 Button("Open History") {
                     openHistory()
                 }
@@ -245,73 +200,54 @@ struct MainView: View {
         }
     }
 
-    private var statsTile: some View {
-        let weekly = weeklyStats
-        return BentoTile(title: "Weekly Stats", subtitle: "Last 7 days") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    StatChip(label: "Dictations", value: "\(weekly.count)")
-                    StatChip(label: "Minutes", value: String(format: "%.1f", weekly.minutes))
-                }
-                Text("Based on dictation history only.")
+    private var accuracyTile: some View {
+        BentoTile(title: "Accuracy", subtitle: currentModelSelection.profile.displayName) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(currentModelSelection.profile.detailText)
                     .font(.caption)
                     .foregroundColor(.secondary)
-            }
-        }
-    }
 
-    private var themesTile: some View {
-        BentoTile(title: "Themes", subtitle: analysis.source) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(analysis.title)
-                    .font(.system(size: 13, weight: .semibold))
-
-                ForEach(analysis.bullets.prefix(3), id: \.self) { bullet in
-                    Text("• \(bullet)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack(spacing: 12) {
+                    AccuracyMetric(
+                        label: "Model",
+                        value: currentModelSelection.rawModelOverride
+                            ?? currentModelSelection.profile.defaultModelName
+                    )
+                    AccuracyMetric(
+                        label: "Terms",
+                        value: "\(Vocabulary.shared.enabledTerms.count)"
+                    )
+                    AccuracyMetric(
+                        label: "Corrections",
+                        value: "\(CorrectionEngine.shared.learnedCorrectionTexts.count)"
+                    )
                 }
 
-                if analysis.source == "copilot-error" {
-                    Text("Copilot auth error detected. Using fallback analysis.")
-                        .font(.caption2)
-                        .foregroundColor(.orange)
-                }
+                Text(
+                    "Vocabulary stays editable in v2. Use the profile picker for normal operation and raw overrides only for debug cases."
+                )
+                .font(.caption2)
+                .foregroundColor(.secondary)
 
                 HStack {
-                    Button(isAnalyzing ? "Analyzing..." : "Refresh") {
-                        refreshAnalysis()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isAnalyzing)
-
-                    Spacer()
-
-                    Button("AI Settings") {
+                    Button("Model Settings") {
                         openSettings()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+
+                    Button("Vocabulary") {
+                        openVocabulary()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
             }
         }
     }
 
-    private var vocabularyTile: some View {
-        BentoTile(title: "Vocabulary", subtitle: "Custom terms") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Update domain terms and proper nouns.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                Button("Open Vocabulary") {
-                    openVocabulary()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-        }
+    private var currentModelSelection: (profile: ModelProfile, rawModelOverride: String?) {
+        LegacyAppPreferencesSettingsStore.resolveLegacyModel(selectedModel)
     }
 
     private var voiceMemoSubtitle: String {
@@ -338,105 +274,12 @@ struct MainView: View {
         recentDictations = history.allEntries()
     }
 
-    private func refreshAnalysis() {
-        guard !isAnalyzing else { return }
-        isAnalyzing = true
-
-        let dictationTexts = history.allEntries().map { $0.text }
-        let memoTexts = voiceMemoManager.memos.compactMap { $0.transcript }
-        let combined = dictationTexts + memoTexts
-
-        Task {
-            let result = await ThemesAnalyzer.analyze(
-                texts: combined,
-                useCopilot: useCopilotAnalysis,
-                copilotEndpoint: copilotBridgeURL
-            )
-            await MainActor.run {
-                analysis = result
-                isAnalyzing = false
-                lastAnalysisDate = Date()
-            }
-        }
-    }
-
-    private func refreshAnalysisDebounced() {
-        let now = Date()
-        if let last = lastAnalysisDate, now.timeIntervalSince(last) < 2 {
-            return
-        }
-        refreshAnalysis()
-    }
-
-    private func checkBridgeHealth() {
-        guard useCopilotAnalysis else {
-            bridgeStatus = .disabled
-            bridgeError = nil
-            bridgeModel = nil
-            return
-        }
-
-        guard
-            let url = URL(
-                string: copilotBridgeURL.replacingOccurrences(of: "/analyze", with: "/health"))
-        else {
-            bridgeStatus = .error
-            bridgeError = "Invalid bridge URL"
-            return
-        }
-
-        isCheckingBridge = true
-        Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
-                else {
-                    throw URLError(.badServerResponse)
-                }
-
-                let decoded = try JSONDecoder().decode(BridgeHealthResponse.self, from: data)
-                await MainActor.run {
-                    bridgeStatus = decoded.authReady ? .ready : .error
-                    bridgeError = decoded.lastError
-                    bridgeModel = decoded.model
-                    isCheckingBridge = false
-                }
-            } catch {
-                await MainActor.run {
-                    bridgeStatus = .error
-                    bridgeError = error.localizedDescription
-                    bridgeModel = nil
-                    isCheckingBridge = false
-                }
-            }
-        }
-    }
-
-    private var statusLabel: String {
-        if let model = bridgeModel, !model.isEmpty {
-            return "\(bridgeStatus.label) (\(model))"
-        }
-        return bridgeStatus.label
-    }
-
-    private var bridgeTimer: Timer.TimerPublisher {
-        Timer.publish(every: 15, on: .main, in: .common)
-    }
-
-    private var weeklyStats: (count: Int, minutes: Double) {
-        let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let entries = history.allEntries().filter { $0.timestamp >= sevenDaysAgo }
-        let minutes = entries.reduce(0.0) { $0 + ($1.durationSeconds / 60.0) }
-        return (entries.count, minutes)
-    }
-
     private func timeString(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
-
 }
 
 private struct BentoTile<Content: View>: View {
@@ -471,7 +314,7 @@ private struct BentoTile<Content: View>: View {
     }
 }
 
-private struct StatChip: View {
+private struct AccuracyMetric: View {
     let label: String
     let value: String
 
@@ -481,9 +324,11 @@ private struct StatChip: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Text(value)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
         }
         .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.08))
         .cornerRadius(12)
     }
@@ -522,7 +367,6 @@ private struct VoiceMemoMiniRow: View {
         }
         .padding(.vertical, 4)
     }
-
 }
 
 private struct CompactWaveform: View {
@@ -592,45 +436,4 @@ private struct CompactWaveform: View {
         let value = sin(Double(seed) * 12.9898) * 43758.5453
         return CGFloat(value - floor(value))
     }
-}
-
-private enum BridgeStatus {
-    case ready
-    case error
-    case disabled
-    case unknown
-
-    var label: String {
-        switch self {
-        case .ready: return "Copilot: Ready"
-        case .error: return "Copilot: Error"
-        case .disabled: return "Copilot: Off"
-        case .unknown: return "Copilot: Unknown"
-        }
-    }
-
-    var helpText: String {
-        switch self {
-        case .ready: return "Copilot bridge is reachable."
-        case .error: return "Copilot bridge error."
-        case .disabled: return "Copilot analysis is disabled."
-        case .unknown: return "Bridge status not checked yet."
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .ready: return .green
-        case .error: return .red
-        case .disabled: return .gray
-        case .unknown: return .orange
-        }
-    }
-}
-
-private struct BridgeHealthResponse: Codable {
-    let ok: Bool
-    let model: String?
-    let lastError: String?
-    let authReady: Bool
 }

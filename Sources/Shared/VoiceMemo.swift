@@ -1,6 +1,6 @@
 import Foundation
 
-public struct VoiceMemo: Codable, Identifiable, Equatable {
+public struct VoiceMemo: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var title: String
     public let createdAt: Date
@@ -73,7 +73,7 @@ public struct VoiceMemo: Codable, Identifiable, Equatable {
     }
 }
 
-public struct TranscriptWord: Codable, Hashable {
+public struct TranscriptWord: Codable, Hashable, Sendable {
     public let word: String
     public let start: Double
     public let end: Double

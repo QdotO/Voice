@@ -1,0 +1,54 @@
+<svg width="1600" height="640" viewBox="0 0 1600 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="40" x2="1480" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16110D"/>
+      <stop offset="0.58" stop-color="#070707"/>
+      <stop offset="1" stop-color="#020202"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="162" y1="110" x2="1406" y2="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF5B1F"/>
+      <stop offset="0.5" stop-color="#FFB100"/>
+      <stop offset="1" stop-color="#FFF2C8"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="150" y1="108" x2="558" y2="530" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#100C08"/>
+      <stop offset="1" stop-color="#020202"/>
+    </linearGradient>
+    <path id="wShape" d="M165 148H226L279 356L334 182H386L441 356L494 148H555L484 490H426L360 274L294 490H236L165 148Z"/>
+    <clipPath id="wClip">
+      <use href="#wShape"/>
+    </clipPath>
+  </defs>
+
+  <rect x="16" y="16" width="1568" height="608" rx="120" fill="url(#bg)"/>
+  <rect x="16.5" y="16.5" width="1567" height="607" rx="119.5" stroke="#2E241A"/>
+
+  <rect x="84" y="84" width="552" height="472" rx="102" fill="url(#panel)"/>
+  <rect x="84.5" y="84.5" width="551" height="471" rx="101.5" stroke="url(#ember)" stroke-opacity="0.45"/>
+
+  <g clip-path="url(#wClip)">
+    <rect x="140" y="124" width="440" height="392" fill="#040404"/>
+    <rect x="306" y="124" width="76" height="392" fill="#FFF1C4" opacity="0.12"/>
+    <rect x="324" y="124" width="34" height="392" fill="#FFF1C4" opacity="0.72"/>
+
+    <g fill="url(#ember)" font-family="Menlo, SFMono-Regular, ui-monospace, monospace" font-size="31" font-weight="700" letter-spacing="2">
+      <text x="146" y="178" opacity="0.42">..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..</text>
+      <text x="132" y="216" opacity="0.64">:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/</text>
+      <text x="154" y="254" opacity="0.82">+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*</text>
+      <text x="128" y="292" opacity="1">#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RW</text>
+      <text x="150" y="330" opacity="0.94">DLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS</text>
+      <text x="132" y="368" opacity="0.8">#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+</text>
+      <text x="154" y="406" opacity="0.6">/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:</text>
+      <text x="140" y="444" opacity="0.4">..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..</text>
+    </g>
+
+    <path d="M180 328C216 300 254 296 291 320C332 345 367 347 406 320C444 294 484 296 540 334" stroke="url(#ember)" stroke-width="10" stroke-linecap="round" opacity="0.48"/>
+    <path d="M180 340C219 314 256 312 292 334C331 357 369 358 408 333C447 308 486 310 540 345" stroke="#FFF3C9" stroke-opacity="0.34" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <use href="#wShape" fill="none" stroke="url(#ember)" stroke-width="8" stroke-linejoin="round"/>
+
+  <text x="706" y="286" fill="url(#ember)" font-family="SFMono-Regular, Menlo, ui-monospace, monospace" font-size="132" font-weight="700" letter-spacing="18">WHISPER</text>
+  <text x="712" y="372" fill="#D8C7AD" font-family="SFMono-Regular, Menlo, ui-monospace, monospace" font-size="34" font-weight="600" letter-spacing="8">OFFLINE DICTATION + VOICE MEMOS</text>
+  <text x="712" y="434" fill="#B57A37" font-family="SFMono-Regular, Menlo, ui-monospace, monospace" font-size="28" font-weight="700" letter-spacing="4">.:/\+*#RWDLS#*+/\: SIGNAL-FIRST LOGO SYSTEM</text>
+</svg>

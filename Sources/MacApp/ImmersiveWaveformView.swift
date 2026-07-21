@@ -1,60 +1,203 @@
 import SwiftUI
 
-/// A thin horizontal waveform bar (~18 px tall) that animates to voice level.
-/// Designed for the top-right corner overlay in Immersive Mode.
+/// Full-screen, click-through recording treatment for Immersive Mode.
+/// AppKit owns only the transparent window; SwiftUI owns state and animation.
 struct ImmersiveWaveformView: View {
     @ObservedObject var viewModel: StatusViewModel
+    let bottomInset: CGFloat
 
-    private let barHeight: CGFloat = 18
-    private let segmentCount: Int = 80
+    private var isRecording: Bool { viewModel.state.isRecording }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            ambientGlow
+
+            ImmersiveCapsule(viewModel: viewModel)
+                .frame(maxWidth: 680)
+                .padding(.horizontal, 36)
+                .padding(.bottom, max(22, bottomInset + 18))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.28), value: isRecording)
+        .accessibilityHidden(true)
+    }
+
+    private var ambientGlow: some View {
+        ZStack {
+            // Low-cost full-screen wash: keeps desktop visible while moving the
+            // palette away from a muddy lower-third dimmer.
+            LinearGradient(
+                colors: [
+                    .clear,
+                    Color(red: 1.0, green: 0.42, blue: 0.30).opacity(isRecording ? 0.07 : 0.04),
+                    Color(red: 1.0, green: 0.47, blue: 0.32).opacity(isRecording ? 0.24 : 0.14),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            // One wide, bright bloom supplies the Claude-like lift behind the
+            // capsule without a per-frame canvas or expensive blur pass.
+            RadialGradient(
+                colors: [
+                    Color(red: 1.0, green: 0.70, blue: 0.54).opacity(isRecording ? 0.62 : 0.38),
+                    Color(red: 1.0, green: 0.43, blue: 0.29).opacity(isRecording ? 0.36 : 0.20),
+                    Color(red: 0.98, green: 0.28, blue: 0.24).opacity(isRecording ? 0.16 : 0.09),
+                    .clear,
+                ],
+                center: UnitPoint(x: 0.5, y: 1.12),
+                startRadius: 30,
+                endRadius: 980
+            )
+
+            // Wide off-screen sources create soft coral spill at both edges.
+            RadialGradient(
+                colors: [
+                    Color(red: 1.0, green: 0.38, blue: 0.34).opacity(isRecording ? 0.20 : 0.11),
+                    .clear,
+                ],
+                center: UnitPoint(x: -0.08, y: 1.02),
+                startRadius: 40,
+                endRadius: 760
+            )
+
+            RadialGradient(
+                colors: [
+                    Color(red: 1.0, green: 0.38, blue: 0.34).opacity(isRecording ? 0.20 : 0.11),
+                    .clear,
+                ],
+                center: UnitPoint(x: 1.08, y: 1.02),
+                startRadius: 40,
+                endRadius: 760
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
+
+private struct ImmersiveCapsule: View {
+    @ObservedObject var viewModel: StatusViewModel
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Group {
+                if viewModel.state.isRecording {
+                    ClaudeStyleWaveform(level: viewModel.level)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                } else {
+                    ProcessingPulse()
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            HStack(spacing: 7) {
+                Text("CAPS LOCK")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .tracking(0.35)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(.white.opacity(0.14))
+                    )
+
+                Text("to stop")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .opacity(0.72)
+            }
+            .foregroundStyle(.white)
+            .fixedSize()
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 72)
+        .background(capsuleBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(.white.opacity(0.20), lineWidth: 0.75)
+        )
+        .shadow(color: Color(red: 1.0, green: 0.22, blue: 0.05).opacity(0.30), radius: 30, y: 12)
+        .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
+        .animation(.easeInOut(duration: 0.22), value: viewModel.state)
+    }
+
+    private var capsuleBackground: some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.78, green: 0.20, blue: 0.08).opacity(0.90),
+                        Color(red: 0.98, green: 0.37, blue: 0.13).opacity(0.82),
+                        Color(red: 0.70, green: 0.15, blue: 0.06).opacity(0.90),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+    }
+}
+
+private struct ClaudeStyleWaveform: View {
+    let level: Float
+    private let count = 57
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let tick = context.date.timeIntervalSinceReferenceDate
-            let gated = max(0, min(1, (viewModel.level - 0.08) / 0.92))
+            let time = context.date.timeIntervalSinceReferenceDate
+            let gated = CGFloat(max(0, min(1, (level - 0.07) / 0.93)))
 
-            Canvas { ctx, size in
-                let segW = size.width / CGFloat(segmentCount)
-                let midY = size.height / 2
+            Canvas { context, size in
+                let spacing = size.width / CGFloat(count)
+                let centerY = size.height / 2
 
-                for i in 0..<segmentCount {
-                    let x = CGFloat(i) * segW + segW / 2
-
-                    // Sine wave driven by time + position + level
-                    let phase1 = tick * 6.0 + Double(i) * 0.28
-                    let phase2 = tick * 9.5 + Double(i) * 0.18
-                    let wave = sin(phase1) * 0.6 + sin(phase2) * 0.4
-
-                    // Height grows with amplitude; at zero level the line stays razor-thin
-                    let maxAmp = size.height * 0.45
-                    let amp = CGFloat(gated) * maxAmp * (0.4 + 0.6 * abs(CGFloat(wave)))
-
-                    // Taper the edges
-                    let edge = abs(CGFloat(i) - CGFloat(segmentCount) / 2) / (CGFloat(segmentCount) / 2)
-                    let tapered = amp * (1.0 - edge * edge * 0.5)
-
+                for index in 0..<count {
+                    let normalized = CGFloat(index) / CGFloat(count - 1)
+                    let distance = abs(normalized - 0.5) * 2
+                    let taper = pow(max(0, 1 - distance), 0.42)
+                    let voice = abs(sin(time * 7.2 + Double(index) * 0.53))
+                        * 0.62 + abs(sin(time * 3.9 + Double(index) * 0.19)) * 0.38
+                    let activity = 0.10 + gated * CGFloat(voice) * taper
+                    let height = max(3, min(size.height * 0.82, 3 + activity * size.height * 0.68))
+                    let width = max(2.2, spacing * 0.42)
                     let rect = CGRect(
-                        x: x - segW * 0.35,
-                        y: midY - tapered,
-                        width: segW * 0.7,
-                        height: max(1.5, tapered * 2)
+                        x: CGFloat(index) * spacing + (spacing - width) / 2,
+                        y: centerY - height / 2,
+                        width: width,
+                        height: height
                     )
-
-                    // Orange → yellow gradient matching the existing Dynamic Island palette
-                    let t = CGFloat(i) / CGFloat(segmentCount)
-                    let r: CGFloat = 1.0
-                    let g: CGFloat = 0.27 + t * 0.57    // 0.27 → 0.84
-                    let b: CGFloat = 0.0
-                    let alpha: CGFloat = 0.55 + CGFloat(gated) * 0.45
-
-                    ctx.fill(
-                        Path(roundedRect: rect, cornerRadius: segW * 0.3),
-                        with: .color(Color(red: r, green: g, blue: b).opacity(alpha))
+                    context.fill(
+                        Path(roundedRect: rect, cornerRadius: width / 2),
+                        with: .color(.white.opacity(0.46 + Double(gated) * 0.48))
                     )
                 }
             }
-            .frame(height: barHeight)
         }
-        .background(.clear)
+        .frame(height: 34)
+    }
+}
+
+private struct ProcessingPulse: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 10) {
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { index in
+                        let pulse = (sin(time * 5.5 - Double(index) * 0.9) + 1) / 2
+                        Circle()
+                            .fill(.white.opacity(0.35 + pulse * 0.60))
+                            .frame(width: 5 + pulse * 2, height: 5 + pulse * 2)
+                    }
+                }
+
+                Text("Transcribing…")
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.88))
+            }
+        }
     }
 }

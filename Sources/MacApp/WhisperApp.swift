@@ -1,5 +1,6 @@
 import AppKit
 import HotKey
+import OSLog
 import SwiftUI
 import WhisperShared
 
@@ -15,6 +16,12 @@ struct WhisperApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private enum DictationTrigger: String {
+        case hotkey
+        case capsLock
+        case ui
+    }
+
     private enum OutputMethod {
         case ax
         case paste
@@ -49,38 +56,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: NSWindow?
     private var immersiveModeWindow: NSWindow?
     private var immersiveModeMenuItem: NSMenuItem?
-    private var waveformWindow: NSWindow?
     private var processingBarWindow: NSWindow?
-    private var immersiveCanvas: ASCIICanvasView?
     private var hotkeyMonitor: NSObjectProtocol?
     private var capsLockEventTap: CFMachPort?
     private var capsLockRunLoopSource: CFRunLoopSource?
-    private var isCapsLockDictationPressActive = false
+    private var capsLockDictationPolicy = CapsLockDictationPolicy()
     private var currentHotkeyKeyCode: Int?
     private var currentHotkeyModifiers: Int?
     private var currentStopHotkeyKeyCode: Int?
     private var currentStopHotkeyModifiers: Int?
     private var currentUseCustomStatusPosition: Bool?
     private var currentStatusOverlayPosition: String?
+    private let logger = Logger(subsystem: "Whisper", category: "AppDelegate")
 
-    private let audioCapture = AudioCapture()
-    private let transcriber = Transcriber()
-    private let voiceMemoTranscriber = Transcriber()
-    private let textInjector = TextInjector()
     private let dictationHistory = DictationHistory.shared
     private let statusViewModel = StatusViewModel()
-    private lazy var voiceMemoManager = VoiceMemoManager(
-        transcriber: voiceMemoTranscriber,
-        modelProvider: { [weak self] in
-            self?.selectedModel ?? "base.en"
+    private let textInsertionService = SystemTextInsertionService.make()
+    private lazy var liveWhisperEngine: LiveWhisperEngine = {
+        LiveWhisperEngine(audioLevelHandler: { [weak self] level in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.statusViewModel.level = level
+                self.handleAudioLevel(level)
+            }
+        })
+    }()
+    private lazy var dictationSettingsStore = LegacyAppPreferencesSettingsStore()
+    private let promptProvider = DefaultTranscriptionPromptProvider.live()
+    private lazy var dictationCoordinator = DefaultDictationCoordinator(
+        engine: liveWhisperEngine,
+        settingsStore: dictationSettingsStore,
+        promptProvider: { [promptProvider] in
+            await promptProvider.makePrompt()
         }
     )
-    private var transcriptionTask: Task<Void, Never>?
-    private var activeTranscriptionID: UUID?
+    private lazy var voiceMemoManager = VoiceMemoManager(
+        engine: liveWhisperEngine,
+        settingsStore: dictationSettingsStore,
+        promptProvider: { [promptProvider] in
+            await promptProvider.makePrompt()
+        }
+    )
+    private var dictationTask: Task<Void, Never>?
+    private var preparedModelName: String?
     private var lastTargetApp: NSRunningApplication?
     private var lastTargetBundleIdentifier: String?
     private var lastVoiceActivityTime: TimeInterval = 0
-    private let autoStopLevelThreshold: Float = 0.08
+    private var lastPartialUpdateTime: TimeInterval = 0
+    private var smoothedNoiseFloor: Float = 0
+    private var hasNoiseFloorEstimate = false
+    private var recordingStartTime: TimeInterval = 0
+    private var latestSessionPartialTranscript = ""
+    private var maxObservedAudioLevel: Float = 0
+    private var pendingStopTask: Task<Void, Never>?
+    private let minimumCaptureDurationForStop: TimeInterval = 1.15
+    private let autoStopLevelThreshold: Float = 0.04
+    private let autoStopRelativeSpeechDelta: Float = 0.018
+    private let autoStopNoSpeechTimeout: TimeInterval = 8.0
+    private let autoStopTrailingPartialGrace: TimeInterval = 0.42
+    private var hasRecordedInitialReadyMetric = false
+    private var hasCompletedHotkeyMetric = false
+    private var hasMarkedSpeechStartMetric = false
+    private var hasCompletedSpeechPartialMetric = false
 
     private var isRecording = false
     private var state: DictationState = .loading {
@@ -105,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @AppStorage("stopHotkeyModifiers") private var stopHotkeyModifiers = Int(
         NSEvent.ModifierFlags([.command, .option]).carbonFlags)
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
-    @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
+    @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.44
     @AppStorage("recordingMode") private var recordingMode = "hold"
     @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
 
@@ -114,62 +151,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupHotkey()
         setupStatusWindow()
-        setupCallbacks()
+        markMetric(.launchToReady, context: ["model": currentPreparation().resolvedModelName])
         requestPermissionsAndLoad()
-    }
-
-    private func setupCallbacks() {
-        CallbackSetup.configure(
-            audioCapture: audioCapture,
-            transcriber: transcriber,
-            onAudioError: { error in
-                print("[AudioCapture] Error: \(error)")
-            },
-            onAudioLevel: { [weak self] level in
-                self?.statusViewModel.level = level
-                self?.immersiveCanvas?.amplitude = level
-                self?.handleAudioLevel(level)
-            },
-            onTranscriberError: { error in
-                print("[Transcriber] Error: \(error)")
-            },
-            onModelLoaded: { [weak self] success, error in
-                if success {
-                    print("[Transcriber] Model loaded successfully")
-                    self?.state = .ready
-                } else {
-                    print("[Transcriber] Model failed to load: \(error ?? "unknown")")
-                    self?.state = .error(error ?? "Model load failed")
-                }
-            }
-        )
     }
 
     private func requestPermissionsAndLoad() {
         state = .loading
 
-        // Check accessibility first (needed for hotkey AND text injection)
         if !TextInjector.isAccessibilityEnabled {
-            print("[Whisper] Requesting accessibility permission...")
+            logger.info("Requesting accessibility permission")
             TextInjector.requestAccessibility()
         }
 
-        // Request microphone and then load model
-        Task {
-            let hasMic = await audioCapture.requestPermission()
-            print("[Whisper] Microphone permission: \(hasMic)")
+        prewarmDictationEngine(force: true)
+    }
 
-            if !hasMic {
-                await MainActor.run {
-                    state = .error("Microphone access denied")
-                }
-                return
+    private func currentPreparation() -> WhisperEnginePreparation {
+        let settings = dictationSettingsStore.load()
+        return WhisperEnginePreparation(
+            profile: settings.selectedProfile,
+            rawModelOverride: settings.rawModelOverride
+        )
+    }
+
+    private func prewarmDictationEngine(force: Bool = false) {
+        let preparation = currentPreparation()
+        let resolvedModelName = preparation.resolvedModelName
+
+        if !force, preparedModelName == resolvedModelName {
+            if !isRecording {
+                state = .ready
             }
+            return
+        }
 
-            await MainActor.run {
-                loadModel()
+        state = .loading
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.liveWhisperEngine.prepare(preparation)
+                await MainActor.run {
+                    guard self.currentPreparation().resolvedModelName == resolvedModelName else { return }
+                    self.preparedModelName = resolvedModelName
+                    if !self.isRecording {
+                        self.state = .ready
+                    }
+                    if !self.hasRecordedInitialReadyMetric {
+                        self.hasRecordedInitialReadyMetric = true
+                        self.completeMetric(
+                            .launchToReady,
+                            context: ["model": resolvedModelName]
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.cancelMetric(.launchToReady)
+                    self.state = .error(error.localizedDescription)
+                }
             }
         }
+    }
+
+    private func refreshPreparedModelIfNeeded() {
+        guard !isRecording else { return }
+        let resolvedModelName = currentPreparation().resolvedModelName
+        guard preparedModelName != resolvedModelName else { return }
+        prewarmDictationEngine()
     }
 
     // MARK: - Setup
@@ -244,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshHotkeyIfNeeded()
             self?.refreshStatusPositionIfNeeded()
             self?.refreshCapsLockMonitorIfNeeded()
+            self?.refreshPreparedModelIfNeeded()
             self?.updateUI()
         }
     }
@@ -312,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentHotkeyKeyCode = hotkeyKeyCode
         currentHotkeyModifiers = hotkeyModifiers
         hotkey = HotKey(keyCombo: combo)
-        print("[Whisper] Hotkey registered: \(combo.description)")
+        logger.info("Hotkey registered: \(combo.description, privacy: .public)")
 
         hotkey?.keyDownHandler = { [weak self] in
             self?.handleStartHotkeyDown()
@@ -330,7 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let startCombo = currentKeyCombo(), combo == startCombo {
-            print("[Whisper] Stop hotkey matches start hotkey; skipping stop registration")
+            logger.warning("Stop hotkey matches start hotkey; skipping stop registration")
             stopHotkey = nil
             return
         }
@@ -338,10 +389,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentStopHotkeyKeyCode = stopHotkeyKeyCode
         currentStopHotkeyModifiers = stopHotkeyModifiers
         stopHotkey = HotKey(keyCombo: combo)
-        print("[Whisper] Stop hotkey registered: \(combo.description)")
+        logger.info("Stop hotkey registered: \(combo.description, privacy: .public)")
 
         stopHotkey?.keyDownHandler = { [weak self] in
-            print("[Whisper] Stop hotkey DOWN - stopping recording")
+            self?.logger.debug("Stop hotkey pressed")
             self?.stopAnyRecording()
         }
     }
@@ -380,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
             )
         else {
-            print("[Whisper] Failed to install Caps Lock event tap")
+            logger.error("Failed to install Caps Lock event tap")
             return
         }
 
@@ -400,7 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         capsLockRunLoopSource = nil
         capsLockEventTap = nil
-        isCapsLockDictationPressActive = false
+        capsLockDictationPolicy.reset()
     }
 
     private func handleCapsLockEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -413,40 +464,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return Unmanaged.passUnretained(event)
         }
 
+        let input: CapsLockDictationInput?
         switch type {
         case .keyDown:
-            if !isCapsLockDictationPressActive {
-                isCapsLockDictationPressActive = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.startRecording()
-                }
-            }
-            return nil
+            input = .keyDown
         case .keyUp:
-            if isCapsLockDictationPressActive {
-                isCapsLockDictationPressActive = false
-                DispatchQueue.main.async { [weak self] in
-                    self?.stopRecording()
-                }
-            }
-            return nil
+            input = .keyUp
         case .flagsChanged:
-            let capsEnabled = event.flags.contains(.maskAlphaShift)
-            if capsEnabled && !isCapsLockDictationPressActive {
-                isCapsLockDictationPressActive = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.startRecording()
-                }
-            } else if !capsEnabled && isCapsLockDictationPressActive {
-                isCapsLockDictationPressActive = false
-                DispatchQueue.main.async { [weak self] in
-                    self?.stopRecording()
-                }
-            }
-            return nil
+            input = .flagsChanged(isOn: event.flags.contains(.maskAlphaShift))
         default:
+            input = nil
+        }
+
+        guard let input else {
             return Unmanaged.passUnretained(event)
         }
+
+        let action = capsLockDictationPolicy.handle(input, isRecording: isRecording)
+        switch action {
+        case .start:
+            DispatchQueue.main.async { [weak self] in
+                self?.startRecording(trigger: .capsLock)
+            }
+        case .stop:
+            DispatchQueue.main.async { [weak self] in
+                self?.stopRecording()
+            }
+        case .none:
+            break
+        }
+
+        return nil
     }
 
     private func setupStatusWindow() {
@@ -619,7 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = MainView(
             voiceMemoManager: voiceMemoManager,
             statusViewModel: statusViewModel,
-            startDictation: { [weak self] in self?.startRecording() },
+            startDictation: { [weak self] in self?.startRecording(trigger: .ui) },
             stopDictation: { [weak self] in self?.stopRecording() },
             openSettings: { [weak self] in self?.openSettings() },
             openHistory: { [weak self] in self?.openHistoryWindow() },
@@ -643,220 +691,424 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow = window
     }
 
-    private func loadModel() {
-        state = .loading
-        print("[Whisper] Loading model: \(selectedModel)")
-
-        // Update vocabulary prompt
-        transcriber.vocabularyPrompt = Vocabulary.shared.generatePrompt()
-
-        Task {
-            await transcriber.loadModel(selectedModel)
-            // Note: state transition now handled by onModelLoaded callback
-        }
-    }
-
-    // MARK: - Recording
-
-    private func startRecording() {
-        print("[Whisper] startRecording called - state: \(state), isRecording: \(isRecording)")
-
+    private func startRecording(trigger: DictationTrigger = .hotkey) {
         guard case .ready = state else {
-            print("[Whisper] Cannot record - not in ready state")
+            logger.debug("Ignoring start request while not ready")
             return
         }
         guard !isRecording else {
-            print("[Whisper] Cannot record - already recording")
+            logger.debug("Ignoring start request while already recording")
             return
         }
         guard !voiceMemoManager.isRecording else {
-            print("[Whisper] Cannot record - voice memo session active")
+            logger.debug("Ignoring start request while a voice memo is active")
             return
         }
 
-        do {
-            captureTargetApp()
-            try audioCapture.start()
-            isRecording = true
-            lastVoiceActivityTime = Date().timeIntervalSinceReferenceDate
-            state = .recording
-            print("[Whisper] Recording started")
-        } catch {
-            print("[Whisper] Failed to start recording: \(error)")
-            state = .error(error.localizedDescription)
+        captureTargetApp()
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        lastVoiceActivityTime = Date().timeIntervalSinceReferenceDate
+        lastPartialUpdateTime = lastVoiceActivityTime
+        smoothedNoiseFloor = 0
+        hasNoiseFloorEstimate = false
+        recordingStartTime = lastVoiceActivityTime
+        latestSessionPartialTranscript = ""
+        maxObservedAudioLevel = 0
+        statusViewModel.level = 0
+        isRecording = true
+        state = .recording
+        dictationTask?.cancel()
+        hasCompletedHotkeyMetric = false
+        hasMarkedSpeechStartMetric = false
+        hasCompletedSpeechPartialMetric = false
+        markMetric(
+            .hotkeyToRecording,
+            context: [
+                "trigger": trigger.rawValue,
+                "model": currentPreparation().resolvedModelName,
+            ]
+        )
+        logger.info(
+            "Dictation start trigger=\(trigger.rawValue, privacy: .public) mode=\(self.recordingMode, privacy: .public) autoStop=\(self.autoStopEnabled, privacy: .public) threshold=\(self.autoStopLevelThreshold, privacy: .public)"
+        )
+
+        dictationTask = Task { [weak self] in
+            guard let self else { return }
+
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.dictationTask = nil
+                }
+            }
+
+            do {
+                let stream = try await self.dictationCoordinator.startDictation()
+                for try await update in stream {
+                    await self.handleDictationUpdate(update)
+                }
+            } catch is CancellationError {
+                await self.handleCancelledDictation()
+            } catch {
+                await self.handleDictationFailure(error)
+            }
         }
+
+        logger.info("Dictation requested")
     }
 
     private func stopRecording() {
-        print("[Whisper] stopRecording called - isRecording: \(isRecording)")
-
-        guard isRecording else {
-            print("[Whisper] Cannot stop - not recording")
+        guard isRecording || dictationTask != nil else {
+            logger.debug("Ignoring stop request while no dictation task is active")
             return
         }
 
+        let now = Date().timeIntervalSinceReferenceDate
+        let elapsed = recordingStartTime > 0 ? now - recordingStartTime : 0
+        if isRecording, elapsed < minimumCaptureDurationForStop {
+            let remaining = minimumCaptureDurationForStop - elapsed
+            if pendingStopTask == nil {
+                logger.debug(
+                    "Delaying stop by \(remaining, privacy: .public)s to capture minimum audio window"
+                )
+                pendingStopTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(
+                        nanoseconds: UInt64(max(0, remaining) * 1_000_000_000)
+                    )
+                    guard let self else { return }
+                    self.pendingStopTask = nil
+                    self.stopRecordingNow()
+                }
+            }
+            return
+        }
+
+        stopRecordingNow()
+    }
+
+    private func stopRecordingNow() {
+        guard isRecording || dictationTask != nil else {
+            return
+        }
+
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
         isRecording = false
+        recordingStartTime = 0
         statusViewModel.level = 0
         state = .processing
-
-        let audio = audioCapture.stop()
-        let duration = Float(audio.count) / 16000.0
-        print("[Whisper] Captured \(audio.count) samples (\(duration)s)")
-
-        guard !audio.isEmpty else {
-            print("[Whisper] No audio captured!")
-            state = .ready
-            return
+        markMetric(.stopToFinal, context: ["model": currentPreparation().resolvedModelName])
+        Task { [weak self] in
+            await self?.dictationCoordinator.stopDictation()
         }
+    }
 
-        // Need minimum audio length for Whisper
-        guard audio.count >= 8000 else {
-            print("[Whisper] Audio too short (< 0.5s), skipping transcription")
-            lastTranscription = "(too short)"
-            state = .ready
+    private func handleDictationUpdate(_ update: DictationSessionUpdate) async {
+        switch update.state {
+        case .idle:
             return
-        }
-
-        let transcriptionID = UUID()
-        activeTranscriptionID = transcriptionID
-        transcriptionTask?.cancel()
-        transcriptionTask = Task { [weak self] in
-            guard let self else { return }
-            print("[Whisper] Starting transcription...")
-
-            // Transcribe
-            guard let payload = await transcriber.transcribe(audio) else {
-                print("[Whisper] Transcription returned nil")
-                await MainActor.run {
-                    self.lastTranscription = "(no speech detected)"
-                    self.state = .ready
-                }
-                return
-            }
-
-            if Task.isCancelled || activeTranscriptionID != transcriptionID {
-                return
-            }
-
-            print("[Whisper] Raw transcription: '\(payload.text)'")
-
-            // Apply learned corrections
-            let finalText = CorrectionEngine.shared.apply(to: payload.text)
-            print("[Whisper] Final text: '\(finalText)'")
-
+        case .preparing:
             await MainActor.run {
-                if self.activeTranscriptionID == transcriptionID {
-                    self.activateTargetApp()
+                self.isRecording = true
+                self.state = .recording
+            }
+        case .recording:
+            if !hasCompletedHotkeyMetric {
+                hasCompletedHotkeyMetric = true
+                completeMetric(.hotkeyToRecording, context: ["state": update.state.rawValue])
+            }
+            await MainActor.run {
+                self.isRecording = true
+                self.state = .recording
+            }
+        case .partial:
+            let trimmedTranscript = update.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedTranscript.isEmpty, self.latestSessionPartialTranscript.isEmpty {
+                logger.info(
+                    "First partial received chars=\(trimmedTranscript.count, privacy: .public)"
+                )
+            }
+            if !trimmedTranscript.isEmpty, !hasMarkedSpeechStartMetric {
+                hasMarkedSpeechStartMetric = true
+                lastVoiceActivityTime = Date().timeIntervalSinceReferenceDate
+            }
+            if hasMarkedSpeechStartMetric, !hasCompletedSpeechPartialMetric,
+                !trimmedTranscript.isEmpty
+            {
+                hasCompletedSpeechPartialMetric = true
+                completeMetric(
+                    .speechStartToFirstPartial,
+                    context: ["characters": "\(update.transcript.count)"]
+                )
+            }
+            await MainActor.run {
+                if !trimmedTranscript.isEmpty {
+                    let now = Date().timeIntervalSinceReferenceDate
+                    self.latestSessionPartialTranscript = StreamingTranscriptAccumulator.moreComplete(
+                        self.latestSessionPartialTranscript,
+                        trimmedTranscript
+                    )
+                    self.lastPartialUpdateTime = now
+                    // A fresh live partial is stronger evidence of ongoing speech
+                    // than one low audio-level sample.
+                    self.lastVoiceActivityTime = now
+                }
+                self.lastTranscription = update.transcript
+                if self.isRecording {
+                    self.state = .recording
                 }
             }
-
-            try? await Task.sleep(nanoseconds: 80_000_000)
-
-            await MainActor.run { [finalText] in
-                guard self.activeTranscriptionID == transcriptionID, !Task.isCancelled else {
-                    return
+        case .finalizing:
+            await MainActor.run {
+                self.isRecording = false
+                self.recordingStartTime = 0
+                self.statusViewModel.level = 0
+                if !update.transcript.isEmpty {
+                    self.latestSessionPartialTranscript = StreamingTranscriptAccumulator.moreComplete(
+                        self.latestSessionPartialTranscript,
+                        update.transcript
+                    )
+                    self.lastTranscription = update.transcript
                 }
+                self.state = .processing
+            }
+        case .completed:
+            logger.info(
+                "Completed update chars=\(update.transcript.count, privacy: .public) words=\(update.words.count, privacy: .public)"
+            )
+            completeMetric(
+                .stopToFinal,
+                context: ["words": "\(update.words.count)"]
+            )
+            await finalizeCompletedDictation(update)
+        case .failed:
+            cancelMetric(.hotkeyToRecording)
+            cancelMetric(.speechStartToFirstPartial)
+            cancelMetric(.stopToFinal)
+            await MainActor.run {
+                self.isRecording = false
+                self.statusViewModel.level = 0
+                self.state = .error(update.errorDescription ?? "Dictation failed")
+            }
+        }
+    }
+
+    private func finalizeCompletedDictation(_ update: DictationSessionUpdate) async {
+        await MainActor.run {
+            self.isRecording = false
+            self.recordingStartTime = 0
+            self.pendingStopTask?.cancel()
+            self.pendingStopTask = nil
+            self.statusViewModel.level = 0
+            self.state = .processing
+        }
+
+        let rawTranscript = update.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTranscript = StreamingTranscriptAccumulator.moreComplete(
+            latestSessionPartialTranscript,
+            rawTranscript
+        )
+        let finalText = CorrectionEngine.shared.apply(to: resolvedTranscript)
+
+        guard !Task.isCancelled else { return }
+
+        guard !finalText.isEmpty else {
+            logger.warning(
+                "No speech detected rawChars=\(rawTranscript.count, privacy: .public) fallbackChars=\(self.latestSessionPartialTranscript.count, privacy: .public) maxLevel=\(self.maxObservedAudioLevel, privacy: .public)"
+            )
+            await MainActor.run {
+                self.latestSessionPartialTranscript = ""
+                self.lastTranscription = "(no speech detected)"
+                self.state = .ready
+            }
+            return
+        }
+
+        await MainActor.run {
+            self.activateTargetApp()
+        }
+
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        guard !Task.isCancelled else { return }
+
+        let duration = Float(update.words.last?.end ?? 0)
+
+        do {
+            let insertionRequest = await MainActor.run { () -> TextInsertionRequest in
                 if self.alwaysCopyToClipboard {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(finalText, forType: .string)
                 }
 
-                // Then type or paste at the cursor
-                do {
-                    let targetBundleID =
-                        self.lastTargetBundleIdentifier ?? self.lastTargetApp?.bundleIdentifier
-                    let targetName = self.lastTargetApp?.localizedName ?? ""
-                    let strategy = TextInjectionRouter.strategy(
-                        bundleID: targetBundleID,
-                        appName: targetName,
-                        userPrefersPaste: self.usePaste
-                    )
-
-                    if strategy == .axInsert {
-                        print("[Whisper] AX inserting text...")
-                        let axInserted =
-                            (try? self.textInjector.insertIntoFocusedElementAdvanced(finalText))
-                            ?? false
-                        if axInserted {
-                            self.addHistoryEntry(
-                                text: finalText,
-                                duration: duration,
-                                method: .ax
-                            )
-                        } else {
-                            print("[Whisper] AX insert failed, falling back to paste")
-                            try self.textInjector.paste(finalText)
-                            self.addHistoryEntry(
-                                text: finalText,
-                                duration: duration,
-                                method: .paste
-                            )
-                        }
-                    } else if strategy == .paste {
-                        print("[Whisper] Pasting text...")
-                        try self.textInjector.paste(finalText)
-                        self.addHistoryEntry(
-                            text: finalText,
-                            duration: duration,
-                            method: .paste
-                        )
-                    } else {
-                        print("[Whisper] Typing text...")
-                        try self.textInjector.type(finalText)
-                        self.addHistoryEntry(
-                            text: finalText,
-                            duration: duration,
-                            method: .type
-                        )
-                    }
-                    self.lastTranscription = finalText
-                    print("[Whisper] Text injected successfully")
-                } catch {
-                    print("[Whisper] Text injection failed: \(error)")
-                    if let injectionError = error as? TextInjector.InjectionError,
-                        injectionError == .accessibilityNotEnabled
-                    {
-                        TextInjector.requestAccessibility()
-                    }
-
-                    let debugMessage = error.localizedDescription
-                    let combined =
-                        "\(finalText)\n\n[Injection error] \(debugMessage)\n[Hint] Enable Accessibility for Whisper in System Settings > Privacy & Security > Accessibility."
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(combined, forType: .string)
-                    self.lastTranscription = "Copied: \(finalText)"
-                    self.addHistoryEntry(text: finalText, duration: duration, method: .clipboard)
-                }
-
-                if self.activeTranscriptionID == transcriptionID {
-                    self.state = .ready
-                    self.updateHistoryMenu()
-                }
+                return TextInsertionRequest(
+                    text: finalText,
+                    targetApp: self.currentInsertionTargetProfile(),
+                    preserveClipboard: !self.alwaysCopyToClipboard
+                )
             }
+
+            let result = try await self.textInsertionService.insert(insertionRequest)
+
+            await MainActor.run {
+                self.latestSessionPartialTranscript = ""
+                self.addHistoryEntry(
+                    text: finalText,
+                    duration: duration,
+                    method: self.outputMethod(for: result.strategy)
+                )
+                self.lastTranscription = finalText
+                self.state = .ready
+                self.updateHistoryMenu()
+                self.logger.info(
+                    "Text inserted using \(result.strategy.rawValue, privacy: .public)"
+                )
+            }
+        } catch {
+            await MainActor.run {
+                self.latestSessionPartialTranscript = ""
+                self.logger.error("Text insertion failed: \(error.localizedDescription, privacy: .public)")
+                if let injectionError = error as? TextInjector.InjectionError,
+                    injectionError == .accessibilityNotEnabled
+                {
+                    TextInjector.requestAccessibility()
+                }
+
+                let debugMessage = error.localizedDescription
+                let combined =
+                    "\(finalText)\n\n[Injection error] \(debugMessage)\n[Hint] Enable Accessibility for Whisper in System Settings > Privacy & Security > Accessibility."
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(combined, forType: .string)
+                self.lastTranscription = "Copied: \(finalText)"
+                self.addHistoryEntry(text: finalText, duration: duration, method: .clipboard)
+                self.state = .ready
+                self.updateHistoryMenu()
+            }
+        }
+    }
+
+    private func handleDictationFailure(_ error: Error) async {
+        guard !Task.isCancelled else { return }
+
+        await MainActor.run {
+            self.isRecording = false
+            self.recordingStartTime = 0
+            self.latestSessionPartialTranscript = ""
+            self.pendingStopTask?.cancel()
+            self.pendingStopTask = nil
+            self.statusViewModel.level = 0
+            self.state = .error(error.localizedDescription)
+        }
+    }
+
+    private func handleCancelledDictation() async {
+        cancelMetric(.hotkeyToRecording)
+        cancelMetric(.speechStartToFirstPartial)
+        cancelMetric(.stopToFinal)
+        await MainActor.run {
+            self.isRecording = false
+            self.recordingStartTime = 0
+            self.latestSessionPartialTranscript = ""
+            self.pendingStopTask?.cancel()
+            self.pendingStopTask = nil
+            self.statusViewModel.level = 0
+            if case .processing = self.state {
+                return
+            }
+            self.state = .ready
+        }
+    }
+
+    private func currentInsertionTargetProfile() -> InsertionAppProfile {
+        InsertionAppProfileCatalog.resolve(
+            bundleIdentifier: lastTargetBundleIdentifier ?? lastTargetApp?.bundleIdentifier,
+            applicationName: lastTargetApp?.localizedName ?? "",
+            userPrefersPaste: usePaste
+        )
+    }
+
+    private func outputMethod(for strategy: TextInsertionStrategy) -> OutputMethod {
+        switch strategy {
+        case .axInsert:
+            return .ax
+        case .paste:
+            return .paste
+        case .type:
+            return .type
         }
     }
 
     private func abortTranscription() {
         guard case .processing = state else { return }
-        print("[Whisper] Aborting transcription")
-        activeTranscriptionID = nil
-        transcriptionTask?.cancel()
-        transcriptionTask = nil
+        logger.info("Aborting transcription")
+        dictationTask?.cancel()
+        dictationTask = nil
+        recordingStartTime = 0
+        latestSessionPartialTranscript = ""
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
+        Task { [weak self] in
+            await self?.dictationCoordinator.stopDictation()
+        }
+        cancelMetric(.stopToFinal)
         state = .ready
         statusViewModel.level = 0
     }
 
     private func handleAudioLevel(_ level: Float) {
-        guard isRecording, autoStopEnabled else { return }
+        let mode = RecordingModePreference(rawValue: recordingMode) ?? .hold
+        guard isRecording,
+            DictationStopPolicy.allowsAutomaticStop(
+                recordingMode: mode,
+                isEnabled: autoStopEnabled
+            )
+        else { return }
         let now = Date().timeIntervalSinceReferenceDate
+        if level > maxObservedAudioLevel {
+            maxObservedAudioLevel = level
+        }
 
-        if level >= autoStopLevelThreshold {
+        if !hasNoiseFloorEstimate {
+            smoothedNoiseFloor = level
+            hasNoiseFloorEstimate = true
+        } else if level <= smoothedNoiseFloor {
+            smoothedNoiseFloor = (smoothedNoiseFloor * 0.85) + (level * 0.15)
+        } else {
+            // Raise floor slowly so short spikes do not disable silence detection.
+            smoothedNoiseFloor = (smoothedNoiseFloor * 0.98) + (level * 0.02)
+        }
+
+        let dynamicSpeechThreshold = max(
+            autoStopLevelThreshold,
+            smoothedNoiseFloor + autoStopRelativeSpeechDelta
+        )
+
+        if level >= dynamicSpeechThreshold {
             lastVoiceActivityTime = now
+            if !hasMarkedSpeechStartMetric {
+                hasMarkedSpeechStartMetric = true
+                markMetric(.speechStartToFirstPartial)
+            }
             return
         }
 
-        if now - lastVoiceActivityTime >= autoStopSilenceSeconds {
-            print("[Whisper] Auto-stop triggered (silence)")
+        if !hasMarkedSpeechStartMetric {
+            if recordingStartTime > 0, now - recordingStartTime >= autoStopNoSpeechTimeout {
+                logger.debug("Auto-stop triggered after no-speech timeout")
+                stopRecording()
+            }
+            return
+        }
+
+        let silenceWindow = max(0.7, autoStopSilenceSeconds)
+        if DictationStopPolicy.shouldStopAfterSilence(
+            now: now,
+            lastVoiceActivity: lastVoiceActivityTime,
+            lastPartialUpdate: lastPartialUpdateTime,
+            hasPartialTranscript: !latestSessionPartialTranscript.isEmpty,
+            silenceWindow: silenceWindow,
+            trailingPartialGrace: autoStopTrailingPartialGrace
+        ) {
+            logger.debug("Auto-stop triggered after silence")
             stopRecording()
         }
     }
@@ -864,21 +1116,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleStartHotkeyDown() {
         if recordingMode == "toggle" {
             if isRecording {
-                print("[Whisper] Hotkey DOWN - toggling stop")
+                logger.debug("Start hotkey toggled stop")
                 stopRecording()
             } else {
-                print("[Whisper] Hotkey DOWN - toggling start")
-                startRecording()
+                logger.debug("Start hotkey toggled start")
+                startRecording(trigger: .hotkey)
             }
         } else {
-            print("[Whisper] Hotkey DOWN - starting recording")
-            startRecording()
+            logger.debug("Start hotkey pressed")
+            startRecording(trigger: .hotkey)
         }
     }
 
     private func handleStartHotkeyUp() {
         if recordingMode == "hold" {
-            print("[Whisper] Hotkey UP - stopping recording")
+            logger.debug("Start hotkey released")
             stopRecording()
         }
     }
@@ -902,6 +1154,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model: selectedModel,
             outputMethod: method.value(withClipboard: alwaysCopyToClipboard)
         )
+    }
+
+    private func markMetric(_ metric: WhisperMetric, context: [String: String] = [:]) {
+        Task {
+            await WhisperTelemetry.shared.mark(metric, context: context)
+        }
+    }
+
+    private func completeMetric(_ metric: WhisperMetric, context: [String: String] = [:]) {
+        Task {
+            await WhisperTelemetry.shared.complete(metric, additionalContext: context)
+        }
+    }
+
+    private func cancelMetric(_ metric: WhisperMetric) {
+        Task {
+            await WhisperTelemetry.shared.cancel(metric)
+        }
     }
 
     // MARK: - UI Updates
@@ -929,7 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Whisper")
         }
 
-        // Update status window — suppress when immersive mode is active (waveform bar replaces it)
+        // Update status window — immersive mode supplies its own recording surface.
         if let window = statusWindow {
             let shouldShowOverlay = showStatusIndicator && !menuBarOnlyMode && !immersiveModeEnabled
             if shouldShowOverlay {
@@ -941,23 +1211,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarOnlyItem?.state = menuBarOnlyMode ? .on : .off
 
-        // Immersive mode: fire canvas while recording; scan mode (same window) while processing
+        // Immersive mode stays visually continuous from recording through transcription.
         if immersiveModeEnabled {
-            if state.isRecording {
-                immersiveCanvas?.mode = .fire
-                restoreImmersiveWindowHeight()  // snap back to full 85px before showing
+            if state.isRecording || state == .processing {
                 showImmersiveWindow()
-                showWaveformWindow()
                 processingBarWindow?.orderOut(nil)
-            } else if case .processing = state {
-                // Switch mode in-place — window stays; no flash, no window swap
-                immersiveCanvas?.mode = .scan
-                waveformWindow?.orderOut(nil)
-                processingBarWindow?.orderOut(nil)
-                showScanBar()
             } else {
                 immersiveModeWindow?.orderOut(nil)
-                waveformWindow?.orderOut(nil)
                 processingBarWindow?.orderOut(nil)
             }
         }
@@ -1018,7 +1278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Actual show/hide is driven by updateUI via state changes
         if !immersiveModeEnabled {
             immersiveModeWindow?.orderOut(nil)
-            waveformWindow?.orderOut(nil)
         }
         updateUI()
     }
@@ -1030,53 +1289,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         immersiveModeWindow?.orderFrontRegardless()
     }
 
-    /// Immediately pin the window to the collapsed scan-bar height, then animate a quick rise
-    /// from 0 → 9 px so the bar "grows in" rather than crashing down from 85 px.
-    private func showScanBar() {
-        if immersiveModeWindow == nil { setupImmersiveWindow() }
-        guard let window = immersiveModeWindow, let screen = NSScreen.main else { return }
-        let sf = screen.frame
-        // Start at zero height (invisible) so there is no flash of the full grid
-        window.setFrame(NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 0), display: false)
-        window.orderFrontRegardless()
-        // Animate in to the final 9 px sliver
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.35
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().setFrame(
-                NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 9), display: true)
-        }
-    }
-
-    /// Immediately restore the immersive window to its full 85 px height for recording.
-    private func restoreImmersiveWindowHeight() {
-        guard let window = immersiveModeWindow, let screen = NSScreen.main else { return }
-        let sf = screen.frame
-        let fullFrame = NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: 85)
-        // Non-animated snap so the fire starts at full height the moment recording begins
-        window.setFrame(fullFrame, display: false)
-    }
-
     private func setupImmersiveWindow() {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.frame
-        // Slightly shorter; full width, dense character grid.
-        let windowHeight = CGFloat(85)
-        let windowWidth = screenFrame.width
-        let windowFrame = NSRect(
-            x: screenFrame.minX,
-            y: screenFrame.minY,
-            width: windowWidth,
-            height: windowHeight
+        let dockInset = max(0, screen.visibleFrame.minY - screenFrame.minY)
+        let hostingView = NSHostingView(
+            rootView: ImmersiveWaveformView(
+                viewModel: statusViewModel,
+                bottomInset: dockInset
+            )
         )
-
-        let canvas = ASCIICanvasView(mode: .fire)
-        canvas.frame = NSRect(origin: .zero, size: windowFrame.size)
-        canvas.autoresizingMask = [.width, .height]
-        self.immersiveCanvas = canvas
+        hostingView.frame = NSRect(origin: .zero, size: screenFrame.size)
+        hostingView.autoresizingMask = [.width, .height]
 
         let window = NSWindow(
-            contentRect: windowFrame,
+            contentRect: screenFrame,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false,
@@ -1087,51 +1314,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque = false
         window.hasShadow = false
         window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        window.isReleasedWhenClosed = false
-        window.contentView = canvas
-        self.immersiveModeWindow = window
-    }
-
-    private func showWaveformWindow() {
-        if waveformWindow == nil { setupWaveformWindow() }
-        waveformWindow?.orderFrontRegardless()
-    }
-
-    private func setupWaveformWindow() {
-        guard let screen = NSScreen.main else { return }
-        let screenFrame = screen.frame  // full frame, above menu bar
-        let windowWidth = screenFrame.width / 3.0
-        let windowHeight = CGFloat(18)
-        // Flush with very top of display (our window level clears the menu bar)
-        let windowFrame = NSRect(
-            x: screenFrame.maxX - windowWidth,
-            y: screenFrame.maxY - windowHeight,
-            width: windowWidth,
-            height: windowHeight
-        )
-
-        let hostingView = NSHostingView(
-            rootView: ImmersiveWaveformView(viewModel: statusViewModel)
-        )
-        hostingView.frame = NSRect(origin: .zero, size: windowFrame.size)
-
-        let window = NSWindow(
-            contentRect: windowFrame,
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false,
-            screen: screen
-        )
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
         window.contentView = hostingView
-        self.waveformWindow = window
+        self.immersiveModeWindow = window
     }
 
     private func showProcessingBar() {

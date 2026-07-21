@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.quincy
   deploymentTarget:
     iOS: 26.0
+    macOS: 14.0
 settings:
   base:
     CODE_SIGN_STYLE: Automatic
@@ -11,7 +12,28 @@ settings:
 packages:
   Whisper:
     path: .
+  HotKey:
+    url: https://github.com/soffes/HotKey.git
+    from: 0.2.0
 targets:
+  WhisperMac:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/MacApp
+    resources:
+      - Design/Generated/WhisperV2.icns
+    info:
+      path: macOS/App/Info.plist
+    dependencies:
+      - package: Whisper
+        product: WhisperShared
+      - package: HotKey
+        product: HotKey
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper
+        PRODUCT_NAME: Whisper
   WhisperiOS:
     type: application
     platform: iOS

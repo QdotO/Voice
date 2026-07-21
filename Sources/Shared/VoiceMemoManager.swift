@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import OSLog
 #if os(macOS)
 import AppKit
 import UniformTypeIdentifiers
@@ -15,22 +16,27 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
     @Published public private(set) var playbackDuration: TimeInterval = 0
 
     private let store: VoiceMemoStore
-    private let transcriber: Transcriber
-    private let modelProvider: () -> String
+    private let engine: any WhisperEngine
+    private let settingsStore: any SettingsStore
+    private let promptProvider: @Sendable () async -> String
+    private let logger = Logger(subsystem: "Whisper", category: "VoiceMemos")
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
     private var timer: Timer?
     private var playbackTimer: Timer?
     private var currentMemoID: UUID?
     private var currentFileURL: URL?
+    private var transcriptionChain: Task<Void, Never>?
 
     public init(
-        transcriber: Transcriber,
-        modelProvider: @escaping () -> String,
+        engine: any WhisperEngine,
+        settingsStore: any SettingsStore,
+        promptProvider: @escaping @Sendable () async -> String,
         store: VoiceMemoStore = .shared
     ) {
-        self.transcriber = transcriber
-        self.modelProvider = modelProvider
+        self.engine = engine
+        self.settingsStore = settingsStore
+        self.promptProvider = promptProvider
         self.store = store
         super.init()
         memos = store.allMemos()
@@ -76,7 +82,7 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
 
             startTimer()
         } catch {
-            print("[VoiceMemo] Failed to start recording: \(error)")
+            logger.error("Failed to start memo recording: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -116,9 +122,7 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         memos = store.allMemos()
 
         if memo.autoTranscribe {
-            Task {
-                await transcribe(memoID: memoID, fileURL: fileURL)
-            }
+            enqueueTranscription(memoID: memoID, fileURL: fileURL)
         } else {
             store.update(id: memoID) { updated in
                 updated.isTranscribing = false
@@ -146,7 +150,7 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
             playbackTime = player.currentTime
             startPlaybackTimer()
         } catch {
-            print("[VoiceMemo] Failed to play memo: \(error)")
+            logger.error("Failed to play memo: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -191,9 +195,7 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
             refreshed.transcript == nil,
             !refreshed.isTranscribing
         {
-            Task {
-                await transcribe(memoID: refreshed.id, fileURL: store.memoURL(for: refreshed))
-            }
+            enqueueTranscription(memoID: refreshed.id, fileURL: store.memoURL(for: refreshed))
         }
     }
 
@@ -206,9 +208,7 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         }
         memos = store.allMemos()
 
-        Task {
-            await transcribe(memoID: memo.id, fileURL: store.memoURL(for: memo))
-        }
+        enqueueTranscription(memoID: memo.id, fileURL: store.memoURL(for: memo))
     }
 
     public func retranscribeMissingTimings() {
@@ -226,10 +226,8 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         }
         memos = store.allMemos()
 
-        Task {
-            for memo in targets {
-                await transcribe(memoID: memo.id, fileURL: store.memoURL(for: memo))
-            }
+        for memo in targets {
+            enqueueTranscription(memoID: memo.id, fileURL: store.memoURL(for: memo))
         }
     }
 
@@ -294,42 +292,81 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         return (clamped - minDb) / -minDb
     }
 
-    private func transcribe(memoID: UUID, fileURL: URL) async {
-        do {
-            let model = modelProvider()
-            if transcriber.modelName != model {
-                await transcriber.loadModel(model)
-            }
+    private func enqueueTranscription(memoID: UUID, fileURL: URL) {
+        let previousTask = transcriptionChain
+        transcriptionChain = Task { [weak self] in
+            _ = await previousTask?.value
+            guard let self else { return }
+            await self.transcribe(memoID: memoID, fileURL: fileURL)
+        }
+    }
 
-            let audio = try AudioFileLoader.loadPCM16kMono(from: fileURL)
-            guard let payload = await transcriber.transcribe(audio) else {
-                store.update(id: memoID) { memo in
+    private func transcribe(memoID: UUID, fileURL: URL) async {
+        let startedAt = ContinuousClock().now
+
+        do {
+            let settings = settingsStore.load()
+            let preparation = WhisperEnginePreparation(
+                profile: settings.selectedProfile,
+                rawModelOverride: settings.rawModelOverride
+            )
+            try await engine.prepare(preparation)
+
+            let request = MemoTranscriptionRequest(
+                memoID: memoID,
+                audioFileURL: fileURL,
+                profile: settings.selectedProfile,
+                localeIdentifier: Locale.current.identifier,
+                prompt: await promptProvider()
+            )
+            let result = try await engine.transcribeMemo(request)
+            let transcript = result.payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let elapsed = startedAt.duration(to: ContinuousClock().now)
+            let elapsedSeconds = max(0.001, Self.seconds(from: elapsed))
+            let throughput = max(0, result.durationSeconds / elapsedSeconds)
+
+            await WhisperTelemetry.shared.record(
+                BenchmarkMeasurement(
+                    metric: .memoThroughput,
+                    value: throughput,
+                    unit: .realtimeMultiplier,
+                    context: [
+                        "memo_id": memoID.uuidString,
+                        "characters": "\(transcript.count)",
+                    ]
+                )
+            )
+
+            await MainActor.run {
+                self.store.update(id: memoID) { memo in
+                    memo.transcript = transcript.isEmpty ? nil : transcript
+                    memo.transcriptWords = transcript.isEmpty ? nil : result.payload.words
+                    if result.durationSeconds > 0 {
+                        memo.durationSeconds = result.durationSeconds
+                    }
+                    memo.isTranscribing = false
+                }
+                self.memos = self.store.allMemos()
+            }
+        } catch {
+            logger.error("Memo transcription failed: \(error.localizedDescription, privacy: .public)")
+            await MainActor.run {
+                self.store.update(id: memoID) { memo in
                     memo.isTranscribing = false
                     memo.transcript = nil
                     memo.transcriptWords = nil
                 }
-                memos = store.allMemos()
-                return
+                self.memos = self.store.allMemos()
             }
-
-            store.update(id: memoID) { memo in
-                memo.transcript = payload.text
-                memo.transcriptWords = payload.words
-                memo.isTranscribing = false
-            }
-            memos = store.allMemos()
-        } catch {
-            print("[VoiceMemo] Transcription failed: \(error)")
-            store.update(id: memoID) { memo in
-                memo.isTranscribing = false
-                memo.transcript = nil
-                memo.transcriptWords = nil
-            }
-            memos = store.allMemos()
         }
     }
 
     @objc private func handleStoreChange() {
         memos = store.allMemos()
+    }
+
+    private static func seconds(from duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
     }
 }

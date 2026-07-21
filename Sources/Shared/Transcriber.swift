@@ -1,8 +1,10 @@
 import Foundation
+import OSLog
 import WhisperKit
 
 /// Handles speech-to-text transcription using WhisperKit
 public final class Transcriber {
+    private let logger = Logger(subsystem: "Whisper", category: "Transcriber")
     private var whisperKit: WhisperKit?
     private var isLoading = false
 
@@ -44,7 +46,9 @@ public final class Transcriber {
         guard let durationSeconds = validateAndPrepareAudio(audio) else {
             return nil
         }
-        print("[Transcriber] Audio duration: \(durationSeconds)s, samples: \(audio.count)")
+        logger.info(
+            "Transcribing audio duration=\(durationSeconds, privacy: .public)s samples=\(audio.count, privacy: .public)"
+        )
 
         do {
             let options = createDecodingOptions()
@@ -54,14 +58,14 @@ public final class Transcriber {
                 decodeOptions: options
             )
 
-            print("[Transcriber] Results count: \(results.count)")
+            logger.debug("Received \(results.count, privacy: .public) transcription results")
 
             guard let result = results.first else {
-                print("[Transcriber] No results returned")
+                logger.warning("No transcription results returned")
                 return nil
             }
 
-            print("[Transcriber] Raw text: '\(result.text)'")
+            logger.debug("Raw transcription length=\(result.text.count, privacy: .public)")
 
             // Clean up the transcription
             let text = cleanTranscription(result.text)
@@ -163,7 +167,7 @@ public final class Transcriber {
     }
 }
 
-public struct TranscriptionPayload {
+public struct TranscriptionPayload: Equatable, Sendable {
     public let text: String
     public let words: [TranscriptWord]
 

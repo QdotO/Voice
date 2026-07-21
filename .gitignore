@@ -9,6 +9,8 @@ Package.resolved.bak
 
 # Xcode
 DerivedData/
+.xcode-build/
+.xcode-sourcepackages/
 *.xcodeproj/
 !Whisper.xcodeproj/
 *.xcworkspace/

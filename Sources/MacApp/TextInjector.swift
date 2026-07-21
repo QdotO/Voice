@@ -48,6 +48,20 @@ final class TextInjector {
         }
     }
 
+    /// Type text without blocking the main thread between key events.
+    func typeText(_ text: String) async throws {
+        guard Self.isAccessibilityEnabled else {
+            throw InjectionError.accessibilityNotEnabled
+        }
+
+        for (index, char) in text.enumerated() {
+            try typeCharacter(char)
+            if index < text.count - 1 {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+    }
+
     /// Paste text using clipboard (faster for long text)
     func paste(_ text: String) throws {
         guard Self.isAccessibilityEnabled else {
@@ -75,6 +89,33 @@ final class TextInjector {
                 pasteboard.clearContents()
                 pasteboard.setString(previous, forType: .string)
             }
+        }
+    }
+
+    /// Paste text while optionally restoring the previous clipboard contents.
+    func pasteText(_ text: String, preserveClipboard: Bool = true) async throws {
+        guard Self.isAccessibilityEnabled else {
+            throw InjectionError.accessibilityNotEnabled
+        }
+
+        let pasteboard = NSPasteboard.general
+        let previousContents = preserveClipboard ? pasteboard.string(forType: .string) : nil
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        try simulateKeyPress(
+            keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand, tap: .cgSessionEventTap)
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        guard preserveClipboard else { return }
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        pasteboard.clearContents()
+        if let previousContents {
+            pasteboard.setString(previousContents, forType: .string)
         }
     }
 

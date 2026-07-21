@@ -1,21 +1,18 @@
 import Foundation
+import OSLog
 
 public final class VoiceMemoStore {
     public static let shared = VoiceMemoStore(baseURL: VoiceMemoStore.defaultBaseURL())
     public static let didChangeNotification = Notification.Name("VoiceMemoStoreDidChange")
+    private static let logger = Logger(subsystem: "Whisper", category: "VoiceMemoStore")
 
     private var memos: [VoiceMemo] = []
-    private let fileURL: URL
+    private let storage: SQLiteV2Store
     private let memosDir: URL
 
     public init(baseURL: URL) {
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-
-        memosDir = appDir.appendingPathComponent("voice-memos", isDirectory: true)
-        try? FileManager.default.createDirectory(at: memosDir, withIntermediateDirectories: true)
-
-        fileURL = appDir.appendingPathComponent("voice-memos.json")
+        storage = SQLiteV2Store.shared(baseURL: baseURL)
+        memosDir = storage.paths.voiceMemosDirectory
         load()
     }
 
@@ -56,22 +53,21 @@ public final class VoiceMemoStore {
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let data = try Data(contentsOf: fileURL)
-            memos = try JSONDecoder().decode([VoiceMemo].self, from: data)
+            memos = try storage.fetchMemos()
         } catch {
-            print("Failed to load voice memos: \(error)")
+            Self.logger.error(
+                "Failed to load voice memos: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func save() {
         do {
-            let data = try JSONEncoder().encode(memos)
-            try data.write(to: fileURL)
+            try storage.replaceMemos(memos)
             NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
         } catch {
-            print("Failed to save voice memos: \(error)")
+            Self.logger.error(
+                "Failed to save voice memos: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

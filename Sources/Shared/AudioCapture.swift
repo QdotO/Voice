@@ -1,8 +1,10 @@
 import AVFoundation
 import Foundation
+import OSLog
 
 /// Captures microphone audio and converts to 16kHz mono for Whisper
 public final class AudioCapture {
+    private let logger = Logger(subsystem: "Whisper", category: "AudioCapture")
     private let engine = AVAudioEngine()
     private var isCapturing = false
     private var audioBuffer: [Float] = []
@@ -45,8 +47,8 @@ public final class AudioCapture {
             throw AudioError.invalidInputFormat
         }
 
-        print(
-            "[AudioCapture] Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) channels"
+        logger.info(
+            "Input format: \(inputFormat.sampleRate, privacy: .public)Hz, \(inputFormat.channelCount, privacy: .public) channels"
         )
 
         // Create converter to 16kHz mono
@@ -74,7 +76,7 @@ public final class AudioCapture {
         engine.prepare()
         try engine.start()
         isCapturing = true
-        print("[AudioCapture] Started capturing")
+        logger.info("Started capturing audio")
     }
 
     /// Stop capturing and return all collected audio

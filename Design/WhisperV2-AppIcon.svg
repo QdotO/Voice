@@ -1,0 +1,79 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="140" y1="96" x2="884" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1D1711"/>
+      <stop offset="0.55" stop-color="#090807"/>
+      <stop offset="1" stop-color="#020202"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="212" y1="320" x2="812" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF5B1F"/>
+      <stop offset="0.52" stop-color="#FFA400"/>
+      <stop offset="1" stop-color="#FFF1AE"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="448" y1="244" x2="630" y2="780" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.4" stop-color="#FFB11A" stop-opacity="0.1"/>
+      <stop offset="0.5" stop-color="#FFF2C4" stop-opacity="0.95"/>
+      <stop offset="0.6" stop-color="#FF8A1A" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softGlow" x="91" y="91" width="842" height="842" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="panelShadow" x="112" y="270" width="800" height="460" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="20" stdDeviation="30" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <path id="wShape" d="M190 284H288L376 616L468 338H556L648 616L736 284H834L718 784H620L512 474L404 784H306L190 284Z"/>
+    <clipPath id="wClip">
+      <use href="#wShape"/>
+    </clipPath>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="url(#bg)"/>
+  <rect x="56" y="56" width="912" height="912" rx="208" stroke="#2A2118" stroke-width="2"/>
+
+  <g opacity="0.26">
+    <rect x="112" y="142" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="208" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="274" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="340" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="406" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="472" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="538" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="604" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="670" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="736" width="800" height="1" fill="#3D2A18"/>
+    <rect x="112" y="802" width="800" height="1" fill="#3D2A18"/>
+  </g>
+
+  <g filter="url(#panelShadow)">
+    <rect x="138" y="308" width="748" height="408" rx="204" fill="#050505"/>
+    <rect x="138.5" y="308.5" width="747" height="407" rx="203.5" stroke="url(#ember)" stroke-opacity="0.52"/>
+  </g>
+
+  <g filter="url(#softGlow)" opacity="0.25">
+    <use href="#wShape" fill="url(#ember)"/>
+  </g>
+
+  <g clip-path="url(#wClip)">
+    <rect x="168" y="248" width="688" height="560" fill="#050505"/>
+    <rect x="442" y="248" width="126" height="560" fill="url(#beam)" opacity="0.92"/>
+
+    <g fill="url(#ember)" font-family="Menlo, SFMono-Regular, ui-monospace, monospace" font-size="50" font-weight="700" letter-spacing="3">
+      <text x="176" y="324" opacity="0.36">..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..</text>
+      <text x="154" y="380" opacity="0.58">:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/</text>
+      <text x="188" y="436" opacity="0.8">+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*</text>
+      <text x="148" y="492" opacity="1">#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RW</text>
+      <text x="180" y="548" opacity="0.95">DLS#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS</text>
+      <text x="150" y="604" opacity="0.82">#*+/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+</text>
+      <text x="188" y="660" opacity="0.62">/\:..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:</text>
+      <text x="164" y="716" opacity="0.42">..:/\+*#RWDLS#*+/\:..:/\+*#RWDLS#*+/\:..</text>
+    </g>
+
+    <path d="M212 540C270 494 332 486 394 528C460 572 516 574 578 526C642 478 706 482 810 548" stroke="url(#ember)" stroke-width="18" stroke-linecap="round" opacity="0.5"/>
+    <path d="M212 560C274 516 334 510 394 548C458 588 520 590 582 544C646 496 710 498 810 566" stroke="#FFF1AE" stroke-opacity="0.38" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <use href="#wShape" fill="none" stroke="url(#ember)" stroke-width="14" stroke-linejoin="round"/>
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="none" stroke="#4B3119" stroke-opacity="0.35" stroke-width="4"/>
+</svg>

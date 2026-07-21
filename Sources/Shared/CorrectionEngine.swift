@@ -1,44 +1,78 @@
 import Foundation
+import OSLog
 
 /// Tracks corrections and learns from user edits
 public final class CorrectionEngine {
     public static let shared = CorrectionEngine()
+    public static let didChangeNotification = Notification.Name("CorrectionEngineDidChange")
+    private static let logger = Logger(subsystem: "Whisper", category: "CorrectionEngine")
 
     private var corrections: [Correction] = []
-    private let fileURL: URL
+    private let storage: SQLiteV2Store
     private let maxCorrections = 500
 
-    struct Correction: Codable {
+    struct Correction: Codable, Sendable {
+        let id: UUID
         let original: String
         let corrected: String
         let timestamp: Date
         let appliedCount: Int
 
-        init(original: String, corrected: String) {
+        init(
+            id: UUID = UUID(),
+            original: String,
+            corrected: String,
+            timestamp: Date = Date(),
+            appliedCount: Int = 0
+        ) {
+            self.id = id
             self.original = original.lowercased()
             self.corrected = corrected
-            self.timestamp = Date()
-            self.appliedCount = 0
+            self.timestamp = timestamp
+            self.appliedCount = appliedCount
         }
     }
 
     private init() {
-        let baseURL = SharedStorage.baseDirectory()
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        fileURL = appDir.appendingPathComponent("corrections.json")
+        storage = SQLiteV2Store.shared()
         load()
     }
 
     /// Testable initializer — uses a custom directory for isolation
     init(baseURL: URL) {
-        let appDir = baseURL.appendingPathComponent("Whisper", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        fileURL = appDir.appendingPathComponent("corrections.json")
+        storage = SQLiteV2Store.shared(baseURL: baseURL)
         load()
     }
 
     // MARK: - Learning
+
+    public var learnedCorrectionTexts: [String] {
+        corrections.map(\.corrected)
+    }
+
+    public func allCorrections() -> [CorrectionRecord] {
+        corrections
+            .map {
+                CorrectionRecord(
+                    id: $0.id,
+                    originalText: $0.original,
+                    correctedText: $0.corrected,
+                    createdAt: $0.timestamp,
+                    appliedCount: $0.appliedCount
+                )
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public func removeCorrection(id: UUID) {
+        corrections.removeAll { $0.id == id }
+        save()
+    }
+
+    public func clearCorrections() {
+        corrections.removeAll()
+        save()
+    }
 
     /// Learn from a user correction
     public func learn(original: String, corrected: String) {
@@ -52,7 +86,11 @@ public final class CorrectionEngine {
         if let index = corrections.firstIndex(where: { $0.original == original.lowercased() }) {
             // Update existing correction if different
             if corrections[index].corrected != corrected {
-                corrections[index] = Correction(original: original, corrected: corrected)
+                corrections[index] = Correction(
+                    id: corrections[index].id,
+                    original: original,
+                    corrected: corrected
+                )
             }
         } else {
             corrections.append(Correction(original: original, corrected: corrected))
@@ -115,8 +153,6 @@ public final class CorrectionEngine {
         // Simple diff: find words that changed
         // This is a basic implementation - could be enhanced with proper diff algorithm
         let originalSet = Set(originalWords.map { $0.lowercased() })
-        let correctedSet = Set(correctedWords.map { $0.lowercased() })
-
         // Words in corrected but not original (additions/changes)
         for word in correctedWords where !originalSet.contains(word.lowercased()) {
             // Try to find what it might have replaced
@@ -239,21 +275,38 @@ public final class CorrectionEngine {
     // MARK: - Persistence
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let data = try Data(contentsOf: fileURL)
-            corrections = try JSONDecoder().decode([Correction].self, from: data)
+            corrections = try storage.fetchCorrections().map {
+                Correction(
+                    id: $0.id,
+                    original: $0.originalText,
+                    corrected: $0.correctedText,
+                    timestamp: $0.createdAt,
+                    appliedCount: $0.appliedCount
+                )
+            }
         } catch {
-            print("Failed to load corrections: \(error)")
+            Self.logger.error(
+                "Failed to load corrections: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func save() {
         do {
-            let data = try JSONEncoder().encode(corrections)
-            try data.write(to: fileURL)
+            try storage.replaceCorrections(
+                corrections.map {
+                    CorrectionRecord(
+                        id: $0.id,
+                        originalText: $0.original,
+                        correctedText: $0.corrected,
+                        createdAt: $0.timestamp,
+                        appliedCount: $0.appliedCount
+                    )
+                })
         } catch {
-            print("Failed to save corrections: \(error)")
+            Self.logger.error(
+                "Failed to save corrections: \(error.localizedDescription, privacy: .public)")
         }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 }
