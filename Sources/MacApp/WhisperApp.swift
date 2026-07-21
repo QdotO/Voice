@@ -191,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
 
             do {
+                try await self.liveWhisperEngine.prepareMicrophoneAccess()
                 try await self.liveWhisperEngine.prepare(preparation)
                 await MainActor.run {
                     guard self.currentPreparation().resolvedModelName == resolvedModelName else { return }
@@ -904,10 +905,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let rawTranscript = update.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTranscript = StreamingTranscriptAccumulator.moreComplete(
-            latestSessionPartialTranscript,
-            rawTranscript
-        )
+        let resolvedTranscript = rawTranscript.isEmpty
+            ? latestSessionPartialTranscript
+            : rawTranscript
         let finalText = CorrectionEngine.shared.apply(to: resolvedTranscript)
 
         guard !Task.isCancelled else { return }

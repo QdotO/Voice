@@ -172,3 +172,35 @@ struct AppOwnedCaptureGate: Sendable, Equatable {
         return true
     }
 }
+
+enum LiveSnapshotProgress {
+    static func shouldReplaceText(
+        currentRevision: UInt64,
+        candidateRevision: UInt64,
+        currentSampleCount: Int,
+        candidateSampleCount: Int,
+        currentWordEnd: Double,
+        candidateWordEnd: Double,
+        candidateText: String
+    ) -> Bool {
+        guard !candidateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        guard candidateRevision > currentRevision else { return false }
+
+        if candidateSampleCount > currentSampleCount {
+            return true
+        }
+        if candidateWordEnd > 0, candidateWordEnd >= currentWordEnd {
+            return true
+        }
+        if currentWordEnd > 0 {
+            return false
+        }
+
+        // Progress callbacks and structured segment publication can revise text
+        // inside one decoded audio window. Revision order makes that safe even
+        // when Whisper changes opening words.
+        return candidateSampleCount == currentSampleCount
+    }
+}

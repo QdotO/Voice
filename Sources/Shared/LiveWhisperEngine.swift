@@ -32,6 +32,7 @@ public actor LiveWhisperEngine: WhisperEngine {
         var words: [TranscriptWord] = []
         var audioLevel: Float = 0
         var lastBufferSize: Int = 0
+        var revision: UInt64 = 0
     }
 
     private struct ActiveStreamSession {
@@ -61,6 +62,12 @@ public actor LiveWhisperEngine: WhisperEngine {
     ) {
         self.audioLevelHandler = audioLevelHandler
         self.permissionRequester = permissionRequester
+    }
+
+    public func prepareMicrophoneAccess() async throws {
+        guard await permissionRequester() else {
+            throw WhisperEngineRuntimeError.microphonePermissionDenied
+        }
     }
 
     public func prepare(_ request: WhisperEnginePreparation) async throws {
@@ -161,9 +168,9 @@ public actor LiveWhisperEngine: WhisperEngine {
             compressionCheckWindow: 60,
             // Keep live dictation permissive; VAD gating is used for memo/long-form paths.
             useVAD: false,
-            stateChangeCallback: { [weak self] oldState, newState in
+            stateChangeCallback: { [weak self] oldState, newState, revision in
                 let recordingStarted = !oldState.isRecording && newState.isRecording
-                let snapshot = Self.makeSnapshot(from: newState)
+                let snapshot = Self.makeSnapshot(from: newState, revision: revision)
                 Task {
                     await self?.handleStreamStateChange(
                         sessionID: request.sessionID,
@@ -522,16 +529,27 @@ public actor LiveWhisperEngine: WhisperEngine {
                 "Stream decode scheduled session=\(sessionID.uuidString, privacy: .public) samples=\(snapshot.lastBufferSize, privacy: .public)"
             )
         }
-        let resolvedTranscript = StreamingTranscriptAccumulator.moreComplete(
-            activeStream.lastSnapshot.transcript,
-            snapshot.transcript
-        )
-        if resolvedTranscript == snapshot.transcript {
+        if LiveSnapshotProgress.shouldReplaceText(
+            currentRevision: activeStream.lastSnapshot.revision,
+            candidateRevision: snapshot.revision,
+            currentSampleCount: activeStream.lastSnapshot.lastBufferSize,
+            candidateSampleCount: snapshot.lastBufferSize,
+            currentWordEnd: activeStream.lastSnapshot.words.last?.end ?? 0,
+            candidateWordEnd: snapshot.words.last?.end ?? 0,
+            candidateText: snapshot.transcript
+        ) {
             activeStream.lastSnapshot = snapshot
         } else {
-            // Preserve accumulated text/word timing while keeping meter live.
+            // Preserve last nonempty decoded text while keeping progress current.
             activeStream.lastSnapshot.audioLevel = snapshot.audioLevel
-            activeStream.lastSnapshot.lastBufferSize = snapshot.lastBufferSize
+            activeStream.lastSnapshot.lastBufferSize = max(
+                activeStream.lastSnapshot.lastBufferSize,
+                snapshot.lastBufferSize
+            )
+            activeStream.lastSnapshot.revision = max(
+                activeStream.lastSnapshot.revision,
+                snapshot.revision
+            )
         }
         audioLevelHandler?(snapshot.audioLevel)
 
@@ -646,7 +664,10 @@ public actor LiveWhisperEngine: WhisperEngine {
         return language?.isEmpty == false ? language : nil
     }
 
-    private nonisolated static func makeSnapshot(from state: AppAudioStreamTranscriber.State) -> StreamSnapshot {
+    private nonisolated static func makeSnapshot(
+        from state: AppAudioStreamTranscriber.State,
+        revision: UInt64
+    ) -> StreamSnapshot {
         let confirmedText = state.confirmedSegments.map(\.text).joined()
         let unconfirmedText: String
         if !state.unconfirmedSegments.isEmpty {
@@ -669,7 +690,8 @@ public actor LiveWhisperEngine: WhisperEngine {
             transcript: transcript,
             words: words,
             audioLevel: audioLevel,
-            lastBufferSize: state.lastBufferSize
+            lastBufferSize: state.lastBufferSize,
+            revision: revision
         )
     }
 

@@ -20,10 +20,15 @@ actor AppAudioStreamTranscriber {
         var unconfirmedText: [String] = []
     }
 
-    typealias StateChangeCallback = (State, State) -> Void
+    typealias StateChangeCallback = (State, State, UInt64) -> Void
+
+    private var stateRevision: UInt64 = 0
 
     private var state = State() {
-        didSet { stateChangeCallback?(oldValue, state) }
+        didSet {
+            stateRevision &+= 1
+            stateChangeCallback?(oldValue, state, stateRevision)
+        }
     }
 
     private let stateChangeCallback: StateChangeCallback?

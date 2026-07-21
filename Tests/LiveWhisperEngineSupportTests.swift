@@ -3,6 +3,66 @@ import XCTest
 @testable import WhisperShared
 
 final class LiveWhisperEngineSupportTests: XCTestCase {
+    func testNewerSnapshotCanReviseOpeningWordsWithinSameDecodeWindow() {
+        XCTAssertTrue(
+            LiveSnapshotProgress.shouldReplaceText(
+                currentRevision: 4,
+                candidateRevision: 5,
+                currentSampleCount: 32_000,
+                candidateSampleCount: 32_000,
+                currentWordEnd: 1.4,
+                candidateWordEnd: 1.4,
+                candidateText: "Please schedule the meeting tomorrow"
+            )
+        )
+    }
+
+    func testStaleSnapshotCannotReplaceNewerText() {
+        XCTAssertFalse(
+            LiveSnapshotProgress.shouldReplaceText(
+                currentRevision: 5,
+                candidateRevision: 4,
+                currentSampleCount: 32_000,
+                candidateSampleCount: 32_000,
+                currentWordEnd: 1.4,
+                candidateWordEnd: 1.4,
+                candidateText: "Plea"
+            )
+        )
+    }
+
+    func testUnstructuredProgressCannotReplaceStructuredSnapshotInSameWindow() {
+        XCTAssertFalse(
+            LiveSnapshotProgress.shouldReplaceText(
+                currentRevision: 5,
+                candidateRevision: 6,
+                currentSampleCount: 32_000,
+                candidateSampleCount: 32_000,
+                currentWordEnd: 1.4,
+                candidateWordEnd: 0,
+                candidateText: "stale progress callback"
+            )
+        )
+    }
+
+    func testMicrophonePreparationRejectsDeniedPermission() async {
+        let engine = LiveWhisperEngine(permissionRequester: { false })
+
+        do {
+            try await engine.prepareMicrophoneAccess()
+            XCTFail("Expected microphone permission denial")
+        } catch let error as WhisperEngineRuntimeError {
+            XCTAssertEqual(error.errorDescription, "Microphone permission was denied.")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testMicrophonePreparationCompletesBeforeSessionStart() async throws {
+        let engine = LiveWhisperEngine(permissionRequester: { true })
+        try await engine.prepareMicrophoneAccess()
+    }
+
     func testStopBeforePermissionPreventsLaterLaunch() {
         var lifecycle = LiveDictationSessionLifecycle()
 
