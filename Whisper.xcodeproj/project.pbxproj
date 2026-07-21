@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		1B7EF8B317DAB41BD059F33E /* VoiceMemosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9608FE5CF636D66EA46C080 /* VoiceMemosView.swift */; };
 		260F129B36629FD2F6D9DD40 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D03207E7913748DA6BE39F /* HistoryView.swift */; };
+		3A7C9E1B4D6F80213579ACE0 /* CorrectionLearningEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B8DAF2C5E709132468ACEF1 /* CorrectionLearningEditorView.swift */; };
 		3805EB240F1E86DB2C959CB5 /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 7F9958020379B20972D12E8E /* HotKey */; };
 		3CDE8570347DE75E7617F993 /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6766D94ED55151AB70B8E9E0 /* HotkeyRecorderView.swift */; };
 		474587490583F3B7FA013436 /* SystemTextInsertionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5AE4F73B5B7F1F139DB22A2 /* SystemTextInsertionService.swift */; };
@@ -71,6 +72,7 @@
 		6766D94ED55151AB70B8E9E0 /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
 		7450E6DFF274FED97379E6BE /* ImmersiveWaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmersiveWaveformView.swift; sourceTree = "<group>"; };
 		8046E0EB94FC1B49387ABAF8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		4B8DAF2C5E709132468ACEF1 /* CorrectionLearningEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorrectionLearningEditorView.swift; sourceTree = "<group>"; };
 		837A0D8E131E03EB803FD65B /* WhisperKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WhisperKeyboard.entitlements; sourceTree = "<group>"; };
 		85D7E06CA94EC1E1474E1E82 /* WhisperiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WhisperiOS.entitlements; sourceTree = "<group>"; };
 		8D7C17D9218A8A9012D295EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -183,6 +185,7 @@
 				92A5DF9201E42F7D1F68070E /* ASCIIOverlayView.swift */,
 				4DD7308199582DEA4C831427 /* CrashReporter.swift */,
 				C9D03207E7913748DA6BE39F /* HistoryView.swift */,
+				4B8DAF2C5E709132468ACEF1 /* CorrectionLearningEditorView.swift */,
 				6766D94ED55151AB70B8E9E0 /* HotkeyRecorderView.swift */,
 				1D0339EF87FB5133E7A058FB /* ImmersiveProcessingView.swift */,
 				7450E6DFF274FED97379E6BE /* ImmersiveWaveformView.swift */,
@@ -327,6 +330,7 @@
 				5AC78CE2550A9839B4863CBF /* ASCIIOverlayView.swift in Sources */,
 				A259E11BF42F33A53656E176 /* CrashReporter.swift in Sources */,
 				260F129B36629FD2F6D9DD40 /* HistoryView.swift in Sources */,
+				3A7C9E1B4D6F80213579ACE0 /* CorrectionLearningEditorView.swift in Sources */,
 				3CDE8570347DE75E7617F993 /* HotkeyRecorderView.swift in Sources */,
 				4BE3DCF267C53C09D2F479E1 /* ImmersiveProcessingView.swift in Sources */,
 				A79EE56C763060B5BE8E410C /* ImmersiveWaveformView.swift in Sources */,

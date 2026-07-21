@@ -102,10 +102,38 @@ public final class Vocabulary {
         save()
     }
 
+    /// Remove multiple terms in one persistence operation.
+    public func remove(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+
+        let originalCount = terms.count
+        terms.removeAll { ids.contains($0.id) }
+
+        if terms.count != originalCount {
+            save()
+        }
+    }
+
     /// Toggle a term's enabled state
     public func toggle(_ term: VocabTerm) {
         if let index = terms.firstIndex(where: { $0.id == term.id }) {
             terms[index].enabled.toggle()
+            save()
+        }
+    }
+
+    /// Set enabled state for multiple terms in one persistence operation.
+    public func setEnabled(_ enabled: Bool, forIDs ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+
+        var didChange = false
+        for index in terms.indices where ids.contains(terms[index].id) {
+            guard terms[index].enabled != enabled else { continue }
+            terms[index].enabled = enabled
+            didChange = true
+        }
+
+        if didChange {
             save()
         }
     }

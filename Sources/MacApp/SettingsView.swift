@@ -27,7 +27,9 @@ struct SettingsView: View {
 
     @State private var selectedCategory: String?
     @State private var searchText = ""
+    @State private var selectedTermIDs = Set<UUID>()
     @State private var showAddTerm = false
+    @State private var showDeleteSelectedConfirmation = false
     @State private var newTerm = ""
     @State private var newCategory = "Custom"
     @State private var requestAccessibilityToggle = false
@@ -37,6 +39,7 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab
     @State private var isRecordingShortcut = false
     @State private var isRecordingStopShortcut = false
+    @State private var vocabularyRevision = 0
 
     init(initialTab: SettingsTab = .general) {
         _selectedTab = State(initialValue: initialTab)
@@ -421,14 +424,17 @@ struct SettingsView: View {
                 .padding(12)
 
                 // Terms
-                List {
+                List(selection: $selectedTermIDs) {
                     ForEach(filteredTerms) { term in
                         HStack {
                             Toggle(
                                 term.term,
                                 isOn: Binding(
                                     get: { term.enabled },
-                                    set: { _ in vocab.toggle(term) }
+                                    set: { _ in
+                                        vocab.toggle(term)
+                                        refreshVocabulary()
+                                    }
                                 )
                             )
                             .toggleStyle(.checkbox)
@@ -438,6 +444,8 @@ struct SettingsView: View {
 
                             Button(role: .destructive) {
                                 vocab.remove(term)
+                                selectedTermIDs.remove(term.id)
+                                refreshVocabulary()
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundColor(.white.opacity(0.2))
@@ -448,6 +456,7 @@ struct SettingsView: View {
                             }
                         }
                         .padding(.vertical, 2)
+                        .tag(term.id)
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -463,22 +472,52 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
+                    Button("Select Filtered") {
+                        selectedTermIDs = Set(filteredTerms.map(\.id))
+                    }
+                    .controlSize(.small)
+                    .disabled(filteredTerms.isEmpty)
+
+                    Menu {
+                        Section("Selected (\(selectedTermIDs.count))") {
+                            Button("Enable Selected") {
+                                vocab.setEnabled(true, forIDs: selectedTermIDs)
+                                refreshVocabulary()
+                            }
+                            Button("Disable Selected") {
+                                vocab.setEnabled(false, forIDs: selectedTermIDs)
+                                refreshVocabulary()
+                            }
+                            Divider()
+                            Button("Delete Selected…", role: .destructive) {
+                                showDeleteSelectedConfirmation = true
+                            }
+                        }
+                        .disabled(selectedTermIDs.isEmpty)
+
+                        if let category = selectedCategory {
+                            Section(category) {
+                                Button("Enable All in Category") {
+                                    vocab.setCategory(category, enabled: true)
+                                    refreshVocabulary()
+                                }
+                                Button("Disable All in Category") {
+                                    vocab.setCategory(category, enabled: false)
+                                    refreshVocabulary()
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Actions", systemImage: "ellipsis.circle")
+                    }
+                    .controlSize(.small)
+
                     Spacer()
 
-                    if let category = selectedCategory {
-                        Menu {
-                            Button("Enable All") {
-                                vocab.setCategory(category, enabled: true)
-                            }
-                            Button("Disable All") {
-                                vocab.setCategory(category, enabled: false)
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.title2)
-                        }
-                        .buttonStyle(.plain)
-                        .menuIndicator(.hidden)
+                    if !selectedTermIDs.isEmpty {
+                        Text("\(selectedTermIDs.count) selected")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
                 .padding(12)
@@ -489,9 +528,29 @@ struct SettingsView: View {
         .sheet(isPresented: $showAddTerm) {
             addTermSheet
         }
+        .alert(
+            "Delete \(selectedTermIDs.count) Vocabulary Terms?",
+            isPresented: $showDeleteSelectedConfirmation
+        ) {
+            Button("Delete", role: .destructive) {
+                vocab.remove(ids: selectedTermIDs)
+                selectedTermIDs.removeAll()
+                refreshVocabulary()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes selected terms from vocabulary. This cannot be undone.")
+        }
+        .onChange(of: selectedCategory) { _, _ in
+            selectedTermIDs.removeAll()
+        }
+        .onChange(of: searchText) { _, _ in
+            selectedTermIDs.formIntersection(Set(filteredTerms.map(\.id)))
+        }
     }
 
     private var filteredTerms: [VocabTerm] {
+        _ = vocabularyRevision
         var terms = selectedCategory.map { vocab.terms(in: $0) } ?? vocab.allTerms
 
         if !searchText.isEmpty {
@@ -499,6 +558,10 @@ struct SettingsView: View {
         }
 
         return terms.sorted { $0.term < $1.term }
+    }
+
+    private func refreshVocabulary() {
+        vocabularyRevision &+= 1
     }
 
     private var addTermSheet: some View {
@@ -541,6 +604,7 @@ struct SettingsView: View {
                 Button("Add Term") {
                     if !newTerm.isEmpty {
                         vocab.add(newTerm, category: newCategory)
+                        refreshVocabulary()
                         newTerm = ""
                         showAddTerm = false
                     }
