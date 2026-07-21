@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSEvent.ModifierFlags([.command, .option]).carbonFlags)
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.44
-    @AppStorage("recordingMode") private var recordingMode = "hold"
+    @AppStorage("recordingMode") private var recordingMode = "toggle"
     @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {

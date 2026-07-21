@@ -48,6 +48,10 @@ final class V2SettingsTests: XCTestCase {
         XCTAssertEqual(settings.resolvedModelName, "base.en")
     }
 
+    func testDefaultsUseToggleRecordingMode() {
+        XCTAssertEqual(WhisperSettings.defaults.recordingMode, .toggle)
+    }
+
     func testAutomaticStopFollowsEnabledPreferenceInBothModes() {
         XCTAssertTrue(
             DictationStopPolicy.allowsAutomaticStop(recordingMode: .toggle, isEnabled: true)

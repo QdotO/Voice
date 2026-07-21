@@ -38,4 +38,13 @@ final class LegacyAppPreferencesSettingsStoreTests: XCTestCase {
         XCTAssertTrue(settings.preserveClipboard)
         XCTAssertEqual(settings.recordingMode, .toggle)
     }
+
+    func testStoreDefaultsToToggleRecordingMode() {
+        let defaults = UserDefaults(suiteName: #function)!
+        defaults.removePersistentDomain(forName: #function)
+
+        let settings = LegacyAppPreferencesSettingsStore(userDefaults: defaults).load()
+
+        XCTAssertEqual(settings.recordingMode, .toggle)
+    }
 }

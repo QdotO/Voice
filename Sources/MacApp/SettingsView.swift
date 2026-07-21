@@ -22,7 +22,7 @@ struct SettingsView: View {
         NSEvent.ModifierFlags([.command, .option]).carbonFlags)
     @AppStorage("autoStopEnabled") private var autoStopEnabled = true
     @AppStorage("autoStopSilenceSeconds") private var autoStopSilenceSeconds = 1.5
-    @AppStorage("recordingMode") private var recordingMode = RecordingMode.hold.rawValue
+    @AppStorage("recordingMode") private var recordingMode = RecordingMode.toggle.rawValue
     @AppStorage("enableCapsLockHoldToDictate") private var enableCapsLockHoldToDictate = false
 
     @State private var selectedCategory: String?

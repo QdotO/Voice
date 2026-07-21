@@ -104,7 +104,7 @@ public struct WhisperSettings: Codable, Equatable, Sendable {
         prewarmEnabled: Bool = true,
         livePartialsEnabled: Bool = true,
         preserveClipboard: Bool = true,
-        recordingMode: RecordingModePreference = .hold
+        recordingMode: RecordingModePreference = .toggle
     ) {
         self.selectedProfile = selectedProfile
         self.rawModelOverride = Self.normalize(rawModelOverride)

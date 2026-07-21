@@ -19,7 +19,7 @@ public final class LegacyAppPreferencesSettingsStore: SettingsStore {
         let preserveClipboard = !(userDefaults.object(forKey: Key.alwaysCopyToClipboard) as? Bool ?? true)
         let recordingMode = RecordingModePreference(
             rawValue: userDefaults.string(forKey: Key.recordingMode) ?? ""
-        ) ?? .hold
+        ) ?? .toggle
 
         return WhisperSettings(
             selectedProfile: modelSelection.profile,
