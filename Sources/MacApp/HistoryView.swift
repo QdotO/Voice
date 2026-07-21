@@ -7,6 +7,7 @@ struct HistoryView: View {
     @State private var searchText = ""
     @State private var methodFilter: HistoryMethodFilter = .all
     @State private var selectedTab: HistorySurfaceTab = .history
+    @State private var correctionEntry: DictationHistoryEntry?
 
     private let history = DictationHistory.shared
     private let correctionEngine = CorrectionEngine.shared
@@ -42,6 +43,12 @@ struct HistoryView: View {
             NotificationCenter.default.publisher(for: CorrectionEngine.didChangeNotification)
         ) { _ in
             corrections = correctionEngine.allCorrections()
+        }
+        .sheet(item: $correctionEntry) { entry in
+            CorrectionLearningEditorView(entry: entry, onSaved: {
+                corrections = correctionEngine.allCorrections()
+            })
+            .frame(minWidth: 620, minHeight: 430)
         }
     }
 
@@ -115,6 +122,7 @@ struct HistoryView: View {
                 entry: entry,
                 onCopy: { copy(entry) },
                 onPaste: { paste(entry) },
+                onCorrect: { correctionEntry = entry },
                 onDelete: { history.remove(id: entry.id) }
             )
             .listRowBackground(Color.clear)
@@ -254,6 +262,7 @@ private struct HistoryRow: View {
     let entry: DictationHistoryEntry
     let onCopy: () -> Void
     let onPaste: () -> Void
+    let onCorrect: () -> Void
     let onDelete: () -> Void
     @State private var isHovering = false
 
@@ -305,6 +314,16 @@ private struct HistoryRow: View {
                     }
                     .buttonStyle(.plain)
                     .help("Paste into active app")
+
+                    Button(action: onCorrect) {
+                        Image(systemName: "pencil.and.outline")
+                            .font(.system(size: 11))
+                            .frame(width: 24, height: 24)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Correct and teach")
 
                     Button(role: .destructive, action: onDelete) {
                         Image(systemName: "trash.fill")

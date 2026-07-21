@@ -120,6 +120,25 @@ final class VocabularyTests: XCTestCase {
         XCTAssertFalse(vocab.allTerms.contains { $0.term == "Swift" })
     }
 
+    func testRemoveIDsDeletesOnlySelectedTerms() {
+        vocab.add("Swift", category: "Software Engineering")
+        vocab.add("Rust", category: "Software Engineering")
+        vocab.add("React", category: "Frontend")
+
+        let ids = Set(vocab.allTerms.filter { $0.term != "Rust" }.map(\.id))
+        vocab.remove(ids: ids)
+
+        XCTAssertEqual(vocab.allTerms.map(\.term), ["Rust"])
+    }
+
+    func testRemoveIDsWithEmptySelectionDoesNothing() {
+        vocab.add("Swift", category: "Software Engineering")
+
+        vocab.remove(ids: [])
+
+        XCTAssertEqual(vocab.allTerms.map(\.term), ["Swift"])
+    }
+
     // MARK: - toggle
 
     func testToggleFlipsEnabled() {
@@ -131,6 +150,27 @@ final class VocabularyTests: XCTestCase {
         XCTAssertFalse(vocab.allTerms.first!.enabled)
 
         vocab.toggle(vocab.allTerms.first!)
+        XCTAssertTrue(vocab.allTerms.first!.enabled)
+    }
+
+    func testSetEnabledChangesOnlySelectedTerms() {
+        vocab.add("Swift", category: "Software Engineering")
+        vocab.add("Rust", category: "Software Engineering")
+        vocab.add("React", category: "Frontend")
+
+        let ids = Set(vocab.allTerms.filter { $0.term != "Rust" }.map(\.id))
+        vocab.setEnabled(false, forIDs: ids)
+
+        XCTAssertFalse(vocab.allTerms.first { $0.term == "Swift" }!.enabled)
+        XCTAssertTrue(vocab.allTerms.first { $0.term == "Rust" }!.enabled)
+        XCTAssertFalse(vocab.allTerms.first { $0.term == "React" }!.enabled)
+    }
+
+    func testSetEnabledWithEmptySelectionDoesNothing() {
+        vocab.add("Swift", category: "Software Engineering")
+
+        vocab.setEnabled(false, forIDs: [])
+
         XCTAssertTrue(vocab.allTerms.first!.enabled)
     }
 

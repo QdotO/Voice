@@ -164,7 +164,37 @@ final class CorrectionEngineTests: XCTestCase {
             original: "teh quik fox",
             corrected: "the quick fox"
         )
-        XCTAssertGreaterThanOrEqual(diffs.count, 1)
+        XCTAssertEqual(diffs.map(\.original), ["teh", "quik"])
+        XCTAssertEqual(diffs.map(\.corrected), ["the", "quick"])
+    }
+
+    func testExtractDifferencesMapsRepeatedSimilarWordsByPosition() {
+        let diffs = engine.extractDifferences(
+            original: "wrld wurld",
+            corrected: "world words"
+        )
+
+        XCTAssertEqual(diffs.map(\.original), ["wrld", "wurld"])
+        XCTAssertEqual(diffs.map(\.corrected), ["world", "words"])
+    }
+
+    func testExtractDifferencesDoesNotGuessAcrossDeletion() {
+        let diffs = engine.extractDifferences(
+            original: "hello extra world",
+            corrected: "hello world"
+        )
+
+        XCTAssertTrue(diffs.isEmpty)
+    }
+
+    func testLearnCanSkipVocabularySuggestion() {
+        engine.learn(
+            original: "hello world",
+            corrected: "Hello, world!",
+            suggestVocabulary: false
+        )
+
+        XCTAssertEqual(engine.apply(to: "hello world"), "Hello, world!")
     }
 
     // MARK: - suggestNewTerms()

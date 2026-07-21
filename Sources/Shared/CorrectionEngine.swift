@@ -75,7 +75,11 @@ public final class CorrectionEngine {
     }
 
     /// Learn from a user correction
-    public func learn(original: String, corrected: String) {
+    public func learn(
+        original: String,
+        corrected: String,
+        suggestVocabulary: Bool = true
+    ) {
         let original = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let corrected = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -104,7 +108,7 @@ public final class CorrectionEngine {
         save()
 
         // If this looks like a vocabulary term, suggest adding it
-        if shouldSuggestAsVocab(corrected) {
+        if suggestVocabulary, shouldSuggestAsVocab(corrected) {
             let vocab = Vocabulary.shared
             if !vocab.allTerms.contains(where: { $0.term.lowercased() == corrected.lowercased() }) {
                 vocab.add(corrected, category: "Custom")
@@ -150,16 +154,14 @@ public final class CorrectionEngine {
 
         var differences: [(original: String, corrected: String)] = []
 
-        // Simple diff: find words that changed
-        // This is a basic implementation - could be enhanced with proper diff algorithm
-        let originalSet = Set(originalWords.map { $0.lowercased() })
-        // Words in corrected but not original (additions/changes)
-        for word in correctedWords where !originalSet.contains(word.lowercased()) {
-            // Try to find what it might have replaced
-            let similar = originalWords.first { levenshteinDistance($0, word) <= 3 }
-            if let similar = similar {
-                differences.append((original: similar, corrected: word))
-            }
+        // Only infer replacements when token positions align. Insertions and deletions
+        // fall back to an exact full-text correction instead of guessing mappings.
+        guard originalWords.count == correctedWords.count else { return [] }
+
+        for (originalWord, correctedWord) in zip(originalWords, correctedWords) {
+            guard originalWord.lowercased() != correctedWord.lowercased() else { continue }
+            guard levenshteinDistance(originalWord, correctedWord) <= 3 else { return [] }
+            differences.append((original: originalWord, corrected: correctedWord))
         }
 
         return differences
