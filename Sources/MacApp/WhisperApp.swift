@@ -78,9 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var immersiveModeWindow: NSWindow?
     private var immersiveModeMenuItem: NSMenuItem?
     private var hotkeyMonitor: NSObjectProtocol?
+    private var accessibilityRequestMonitor: NSObjectProtocol?
     private var capsLockEventTap: CFMachPort?
     private var capsLockRunLoopSource: CFRunLoopSource?
+    private var capsLockTapInstallationState = CapsLockEventTapInstallationState()
     private var capsLockDictationPolicy = CapsLockDictationPolicy()
+    private var currentCapsLockEnabled: Bool?
+    private var capsLockActionDispatchCount = 0
     private var currentHotkeyKeyCode: Int?
     private var currentHotkeyModifiers: Int?
     private var currentStopHotkeyKeyCode: Int?
@@ -178,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusWindow()
         markMetric(.launchToReady, context: ["model": currentPreparation().resolvedModelName])
         requestPermissionsAndLoad()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshCapsLockMonitorIfNeeded(trigger: .appActivation)
     }
 
     func registerNativeSettingsAction(_ action: OpenSettingsAction) {
@@ -325,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerHotkey()
         registerStopHotkey()
         registerMenuBarOnlyHotkey()
-        refreshCapsLockMonitorIfNeeded()
+        refreshCapsLockMonitorIfNeeded(trigger: .launch)
 
         hotkeyMonitor = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
@@ -338,6 +346,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.refreshCapsLockMonitorIfNeeded()
                 self?.refreshPreparedModelIfNeeded()
                 self?.updateUI()
+            }
+        }
+
+        accessibilityRequestMonitor = NotificationCenter.default.addObserver(
+            forName: .whisperAccessibilityRequestCompleted,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshCapsLockMonitorIfNeeded(
+                    trigger: .accessibilityRequestCompletion
+                )
             }
         }
     }
@@ -363,11 +383,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func refreshCapsLockMonitorIfNeeded() {
-        if enableCapsLockHoldToDictate {
-            installCapsLockEventTapIfNeeded()
-        } else {
+    private func refreshCapsLockMonitorIfNeeded(
+        trigger: CapsLockEventTapInstallTrigger? = nil
+    ) {
+        let wasEnabled = currentCapsLockEnabled
+        currentCapsLockEnabled = enableCapsLockHoldToDictate
+
+        guard enableCapsLockHoldToDictate else {
             removeCapsLockEventTap()
+            return
+        }
+
+        if let trigger {
+            installCapsLockEventTapIfNeeded(trigger: trigger)
+        } else if wasEnabled != true {
+            installCapsLockEventTapIfNeeded(trigger: .settingsEnabled)
         }
     }
 
@@ -461,8 +491,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func installCapsLockEventTapIfNeeded() {
-        guard capsLockEventTap == nil else { return }
+    private func installCapsLockEventTapIfNeeded(
+        trigger: CapsLockEventTapInstallTrigger
+    ) {
+        guard capsLockEventTap == nil,
+            capsLockTapInstallationState.shouldAttempt(isEnabled: enableCapsLockHoldToDictate)
+        else { return }
+
+        guard TextInjector.isAccessibilityEnabled else {
+            logger.info(
+                "Caps Lock event tap install deferred trigger=\(trigger.rawValue, privacy: .public) reason=accessibility-not-ready"
+            )
+            return
+        }
 
         let mask =
             (1 << CGEventType.keyDown.rawValue)
@@ -488,15 +529,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
             )
         else {
-            logger.error("Failed to install Caps Lock event tap")
+            logger.error(
+                "Caps Lock event tap install failed trigger=\(trigger.rawValue, privacy: .public) reason=tap-create"
+            )
             return
         }
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            logger.error(
+                "Caps Lock event tap install failed trigger=\(trigger.rawValue, privacy: .public) reason=run-loop-source"
+            )
+            return
+        }
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         capsLockEventTap = tap
         capsLockRunLoopSource = source
+        capsLockTapInstallationState.markInstalled()
+        logger.info(
+            "Caps Lock event tap installed trigger=\(trigger.rawValue, privacy: .public)"
+        )
     }
 
     private func removeCapsLockEventTap() {
@@ -508,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         capsLockRunLoopSource = nil
         capsLockEventTap = nil
+        capsLockTapInstallationState.reset()
         capsLockDictationPolicy.reset()
     }
 
@@ -540,11 +594,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let action = capsLockDictationPolicy.handle(input, isRecording: isRecording)
         switch action {
         case .start:
-            DispatchQueue.main.async { [weak self] in
+            dispatchCapsLockAction(action: action) { [weak self] in
                 self?.startRecording(trigger: .capsLock)
             }
         case .stop:
-            DispatchQueue.main.async { [weak self] in
+            dispatchCapsLockAction(action: action) { [weak self] in
                 self?.stopRecording()
             }
         case .none:
@@ -552,6 +606,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return nil
+    }
+
+    private func dispatchCapsLockAction(
+        action: CapsLockDictationAction,
+        work: @escaping () -> Void
+    ) {
+        let eventReceivedAt = DispatchTime.now().uptimeNanoseconds
+        let isMainThread = Thread.isMainThread
+        let path = CapsLockActionDispatcher.path(isMainThread: isMainThread)
+        capsLockActionDispatchCount += 1
+        let dispatchCount = capsLockActionDispatchCount
+
+        let logAndRun: () -> Void = { [weak self] in
+            let delayMilliseconds =
+                (DispatchTime.now().uptimeNanoseconds - eventReceivedAt) / 1_000_000
+            self?.logger.info(
+                "Caps Lock action=\(action == .start ? "start" : "stop", privacy: .public) dispatchPath=\(path.rawValue, privacy: .public) delayMs=\(delayMilliseconds, privacy: .public) count=\(dispatchCount, privacy: .public)"
+            )
+            work()
+        }
+
+        CapsLockActionDispatcher.dispatch(
+            isMainThread: isMainThread,
+            action: logAndRun,
+            enqueue: { action in
+                DispatchQueue.main.async {
+                    action()
+                }
+            }
+        )
     }
 
     private func setupStatusWindow() {
@@ -1466,6 +1550,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         removeCapsLockEventTap()
+        if let hotkeyMonitor {
+            NotificationCenter.default.removeObserver(hotkeyMonitor)
+        }
+        if let accessibilityRequestMonitor {
+            NotificationCenter.default.removeObserver(accessibilityRequestMonitor)
+        }
     }
 }
 

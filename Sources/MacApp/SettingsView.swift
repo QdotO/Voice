@@ -714,6 +714,12 @@ struct SettingsView: View {
     private func requestAccessibilityAndRefresh() {
         TextInjector.requestAccessibility()
         refreshPermissionState(trigger: .accessibilityRequestCompletion)
+        if TextInjector.isAccessibilityEnabled {
+            NotificationCenter.default.post(
+                name: .whisperAccessibilityRequestCompleted,
+                object: nil
+            )
+        }
     }
 
     private func permissionRow(

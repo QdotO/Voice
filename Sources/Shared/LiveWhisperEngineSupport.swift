@@ -80,7 +80,7 @@ struct BoundedFinalAudioWindow: Equatable, Sendable {
         lastDecodedSamples: Int,
         sampleRate: Int
     ) -> BoundedFinalAudioWindow? {
-        guard totalSamples > 0, totalSamples > lastDecodedSamples else { return nil }
+        guard totalSamples > 0 else { return nil }
 
         let decodedSampleCount = min(max(0, lastDecodedSamples), totalSamples)
         let contextSamples = contextSeconds * sampleRate
@@ -93,6 +93,30 @@ struct BoundedFinalAudioWindow: Equatable, Sendable {
             decodedSampleCount: decodedSampleCount
         )
     }
+}
+
+enum LiveDecodeSchedulingPolicy {
+    static let firstDecodeSeconds: Float = 0.5
+    static let subsequentDecodeSeconds: Float = 1.0
+
+    static func shouldSchedule(
+        nextBufferSize: Int,
+        lastDecodedSamples: Int,
+        sampleRate: Int
+    ) -> Bool {
+        guard nextBufferSize > 0, sampleRate > 0 else { return false }
+        let thresholdSeconds = lastDecodedSamples == 0
+            ? firstDecodeSeconds
+            : subsequentDecodeSeconds
+        return Float(nextBufferSize) / Float(sampleRate) >= thresholdSeconds
+    }
+}
+
+enum LiveCaptureTailPolicy {
+    // WhisperKit's microphone tap emits 100 ms buffers. One full tap interval
+    // lets audio already in Core Audio reach `audioSamples` before tap removal.
+    static let microphoneTapNanoseconds: UInt64 = 100_000_000
+    static let settleNanoseconds: UInt64 = 120_000_000
 }
 
 enum FinalTailTranscriptMerger {
@@ -110,7 +134,10 @@ enum FinalTailTranscriptMerger {
 
         let currentTokens = tokens(in: current)
         let tailTokens = tokens(in: tail)
-        let overlap = longestSuffixPrefixOverlap(currentTokens, tailTokens)
+        let overlap = longestSuffixPrefixOverlap(
+            currentTokens.map(normalizedToken),
+            tailTokens.map(normalizedToken)
+        )
         let timedTailWords: [TranscriptWord]
         if overlap > 0 {
             timedTailWords = Array(tailWords.dropFirst(min(overlap, tailWords.count)))
@@ -137,7 +164,13 @@ enum FinalTailTranscriptMerger {
     private static func tokens(in text: String) -> [String] {
         text
             .split(whereSeparator: \.isWhitespace)
-            .map { $0.lowercased() }
+            .map(String.init)
+    }
+
+    private static func normalizedToken(_ token: String) -> String {
+        token
+            .trimmingCharacters(in: .punctuationCharacters)
+            .lowercased()
     }
 
     private static func longestSuffixPrefixOverlap(_ current: [String], _ tail: [String]) -> Int {

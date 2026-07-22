@@ -1,3 +1,5 @@
+import Foundation
+
 public enum CapsLockDictationInput: Equatable, Sendable {
     case keyDown
     case keyUp
@@ -64,4 +66,62 @@ public struct CapsLockDictationPolicy: Sendable {
         defer { pressIntent = nil }
         return pressIntent == .startedDictation ? .stop : .none
     }
+}
+
+public enum CapsLockEventTapInstallTrigger: String, Equatable, Sendable {
+    case launch
+    case appActivation
+    case accessibilityRequestCompletion
+    case settingsEnabled
+}
+
+/// Tracks event-tap ownership without scheduling retries. Failed attempts stay
+/// uninstalled; caller decides when a meaningful lifecycle trigger permits retry.
+public struct CapsLockEventTapInstallationState: Equatable, Sendable {
+    public private(set) var isInstalled = false
+
+    public init() {}
+
+    public func shouldAttempt(isEnabled: Bool) -> Bool {
+        isEnabled && !isInstalled
+    }
+
+    public mutating func markInstalled() {
+        isInstalled = true
+    }
+
+    public mutating func reset() {
+        isInstalled = false
+    }
+}
+
+public enum CapsLockActionDispatchPath: String, Equatable, Sendable {
+    case immediate
+    case mainQueue
+}
+
+/// Keeps callback dispatch testable while preserving a main-queue fallback for
+/// callbacks that arrive off the main thread.
+public enum CapsLockActionDispatcher {
+    public static func path(isMainThread: Bool) -> CapsLockActionDispatchPath {
+        isMainThread ? .immediate : .mainQueue
+    }
+
+    public static func dispatch(
+        isMainThread: Bool,
+        action: @escaping () -> Void,
+        enqueue: (@escaping () -> Void) -> Void
+    ) {
+        if isMainThread {
+            action()
+        } else {
+            enqueue(action)
+        }
+    }
+}
+
+public extension Notification.Name {
+    static let whisperAccessibilityRequestCompleted = Notification.Name(
+        "WhisperAccessibilityRequestCompleted"
+    )
 }

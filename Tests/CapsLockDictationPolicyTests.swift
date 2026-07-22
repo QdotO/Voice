@@ -71,4 +71,55 @@ final class CapsLockDictationPolicyTests: XCTestCase {
         )
         XCTAssertFalse(policy.isPressActive)
     }
+
+    func testActionDispatcherRunsImmediatelyOnMainPath() {
+        var calls = 0
+        var enqueued = false
+
+        CapsLockActionDispatcher.dispatch(
+            isMainThread: true,
+            action: { calls += 1 },
+            enqueue: { _ in enqueued = true }
+        )
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertFalse(enqueued)
+        XCTAssertEqual(
+            CapsLockActionDispatcher.path(isMainThread: true),
+            .immediate
+        )
+    }
+
+    func testActionDispatcherUsesFallbackWhenOffMain() {
+        var calls = 0
+        var queuedAction: (() -> Void)?
+
+        CapsLockActionDispatcher.dispatch(
+            isMainThread: false,
+            action: { calls += 1 },
+            enqueue: { queuedAction = $0 }
+        )
+
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(
+            CapsLockActionDispatcher.path(isMainThread: false),
+            .mainQueue
+        )
+        queuedAction?()
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testEventTapInstallationStateAllowsRetryAfterFailureButNotAfterInstall() {
+        var state = CapsLockEventTapInstallationState()
+
+        XCTAssertTrue(state.shouldAttempt(isEnabled: true))
+        XCTAssertTrue(state.shouldAttempt(isEnabled: true))
+
+        state.markInstalled()
+        XCTAssertFalse(state.shouldAttempt(isEnabled: true))
+        XCTAssertFalse(state.shouldAttempt(isEnabled: false))
+
+        state.reset()
+        XCTAssertTrue(state.shouldAttempt(isEnabled: true))
+    }
 }

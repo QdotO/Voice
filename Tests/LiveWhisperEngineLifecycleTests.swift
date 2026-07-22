@@ -233,6 +233,35 @@ final class LiveWhisperEngineLifecycleTests: XCTestCase {
         XCTAssertEqual(transcript, "tail transcript")
     }
 
+    func testFinalFlushRechecksTailWhenLiveDecodeReachedCapturedBufferEnd() async throws {
+        let model = try await makeModel("final-recheck")
+        let loader = ControlledModelLoader(
+            models: [model],
+            gates: [AsyncLatch(released: true)]
+        )
+        let result = TranscriptionResult(
+            text: "trailing word",
+            segments: [],
+            language: "en",
+            timings: TranscriptionTimings()
+        )
+        let inference = ControlledInference(
+            gate: AsyncLatch(released: true),
+            finalResults: [result]
+        )
+        let engine = makeEngine(loader: loader, inference: inference)
+        try await engine.prepare(WhisperEnginePreparation(profile: .balanced))
+
+        let transcript = try await engine._testFlushFinalAudio(
+            audioSamples: Array(repeating: 0, count: 48_000),
+            lastDecodedSamples: 48_000
+        )
+
+        XCTAssertEqual(transcript, "trailing word")
+        let callCount = await inference.callCount()
+        XCTAssertEqual(callCount, 1)
+    }
+
     func testSuccessfulFinalTailMergesWithUsableLiveSnapshot() async throws {
         let engine = try await makePreparedEngine("tail-success")
 

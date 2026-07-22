@@ -3,6 +3,7 @@
 // cancellation semantics without modifying the package checkout.
 
 import Foundation
+import OSLog
 
 // WhisperKit's TranscribeTask is not annotated Sendable. This actor creates and
 // owns one task, calls it only from its single realtime loop, and awaits each run
@@ -27,6 +28,10 @@ actor AppAudioStreamTranscriber {
     typealias StateChangeCallback = (State, State, UInt64) -> Void
 
     private var stateRevision: UInt64 = 0
+    private let logger = Logger(subsystem: "Whisper", category: "LiveStream")
+    private var captureStartedAtNanoseconds: UInt64?
+    private var didLogFirstDecode = false
+    private var didLogFirstProgress = false
 
     private var state = State() {
         didSet {
@@ -96,29 +101,48 @@ actor AppAudioStreamTranscriber {
         }
 
         state.isRecording = true
+        captureStartedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
+        logger.info("Live capture started")
         do {
             try await realtimeLoop()
         } catch {
-            await stopCapture()
+            _ = captureGate.stop()
+            _ = await stopCapture(settlePendingAudio: false)
             throw error
         }
     }
 
-    func stopStreamTranscription() async {
-        guard captureGate.stop() else { return }
-        await stopCapture()
+    func stopStreamTranscription() async -> [Float] {
+        guard captureGate.stop() else {
+            return Array(audioProcessor.audioSamples)
+        }
+        return await stopCapture(settlePendingAudio: captureGate.didBeginCapture)
     }
 
     func didBeginCapture() -> Bool {
         captureGate.didBeginCapture
     }
 
-    private func stopCapture() async {
-        await progressBridge.stop(drain: true)
+    private func stopCapture(settlePendingAudio: Bool) async -> [Float] {
+        if settlePendingAudio {
+            try? await Task.sleep(nanoseconds: LiveCaptureTailPolicy.settleNanoseconds)
+        }
         audioProcessor.stopRecording()
+        let frozenSamples = Array(audioProcessor.audioSamples)
+        await progressBridge.stop(drain: true)
         if state.isRecording {
             state.isRecording = false
         }
+        let elapsedMilliseconds = captureStartedAtNanoseconds.map {
+            (DispatchTime.now().uptimeNanoseconds - $0) / 1_000_000
+        } ?? 0
+        let settleMilliseconds = settlePendingAudio
+            ? LiveCaptureTailPolicy.settleNanoseconds / 1_000_000
+            : 0
+        logger.info(
+            "Live capture frozen samples=\(frozenSamples.count, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public) settleMs=\(settleMilliseconds, privacy: .public)"
+        )
+        return frozenSamples
     }
 
     private func realtimeLoop() async throws {
@@ -139,20 +163,35 @@ actor AppAudioStreamTranscriber {
         }
         state.currentText = progress.text
         state.currentFallbacks = fallbacks
+        if !didLogFirstProgress, !progress.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            didLogFirstProgress = true
+            let elapsedMilliseconds = captureStartedAtNanoseconds.map {
+                (DispatchTime.now().uptimeNanoseconds - $0) / 1_000_000
+            } ?? 0
+            logger.info(
+                "First decoder progress elapsedMs=\(elapsedMilliseconds, privacy: .public) chars=\(progress.text.count, privacy: .public)"
+            )
+        }
     }
 
     private func transcribeCurrentBuffer() async throws {
         let currentBuffer = audioProcessor.audioSamples
         let nextBufferSize = currentBuffer.count - state.lastBufferSize
-        let nextBufferSeconds = Float(nextBufferSize) / Float(WhisperKit.sampleRate)
+        let shouldSchedule = LiveDecodeSchedulingPolicy.shouldSchedule(
+            nextBufferSize: nextBufferSize,
+            lastDecodedSamples: state.lastBufferSize,
+            sampleRate: WhisperKit.sampleRate
+        )
 
-        guard nextBufferSeconds > 1 else {
+        guard shouldSchedule else {
             if state.currentText.isEmpty {
                 state.currentText = "Waiting for speech..."
             }
             try await Task.sleep(nanoseconds: 100_000_000)
             return
         }
+
+        let nextBufferSeconds = Float(nextBufferSize) / Float(WhisperKit.sampleRate)
 
         if useVAD {
             let voiceDetected = AudioProcessor.isVoiceDetected(
@@ -170,6 +209,15 @@ actor AppAudioStreamTranscriber {
         }
 
         state.lastBufferSize = currentBuffer.count
+        if !didLogFirstDecode {
+            didLogFirstDecode = true
+            let elapsedMilliseconds = captureStartedAtNanoseconds.map {
+                (DispatchTime.now().uptimeNanoseconds - $0) / 1_000_000
+            } ?? 0
+            logger.info(
+                "First live decode scheduled samples=\(currentBuffer.count, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public)"
+            )
+        }
         let transcription = try await transcribeAudioSamples(Array(currentBuffer))
 
         state.currentText = ""

@@ -700,12 +700,15 @@ public actor LiveWhisperEngine: WhisperEngine {
             "Stopping stream session=\(sessionID.uuidString, privacy: .public) lastDecodedSamples=\(activeStream.lastSnapshot.lastBufferSize, privacy: .public)"
         )
 
-        // Always stop hardware ourselves. This covers WhisperKit's normal
-        // return after a swallowed decode error and startup cancellation.
-        whisperKit?.audioProcessor.stopRecording()
+        var frozenAudioSamples: [Float]?
         if transcriberNeedsCleanup, let transcriber = activeStream.transcriber {
-            await transcriber.stopStreamTranscription()
+            // Adapter owns capture shutdown. It waits one microphone tap
+            // interval, stops hardware, then returns one immutable tail snapshot.
+            frozenAudioSamples = await transcriber.stopStreamTranscription()
             didBeginCapture = await transcriber.didBeginCapture()
+        } else {
+            // Covers startup cancellation and failures before adapter ownership.
+            whisperKit?.audioProcessor.stopRecording()
         }
 
         // Permission can remain pending indefinitely. Never await that task
@@ -719,15 +722,15 @@ public actor LiveWhisperEngine: WhisperEngine {
             "Audio stream stopped session=\(sessionID.uuidString, privacy: .public)"
         )
 
-        // Live decoding requires more than one second of new audio. Stopping
-        // can leave a sub-second tail untouched, so decode only residual tail
-        // plus bounded context with end clipping disabled.
+        // Streaming cadence can leave a sub-second tail or an unpublished token.
+        // Recheck bounded final context with end clipping disabled.
         let tailResult: Result<StreamSnapshot?, Error>
         if didBeginCapture {
             do {
                 tailResult = .success(try await flushFinalAudio(
                     using: activeStream.finalDecodeOptions,
-                    lastDecodedSamples: activeStream.lastSnapshot.lastBufferSize
+                    lastDecodedSamples: activeStream.lastSnapshot.lastBufferSize,
+                    audioSamples: frozenAudioSamples
                 ))
             } catch {
                 tailResult = .failure(error)
@@ -789,12 +792,13 @@ public actor LiveWhisperEngine: WhisperEngine {
 
     private func flushFinalAudio(
         using decodeOptions: DecodingOptions?,
-        lastDecodedSamples: Int
+        lastDecodedSamples: Int,
+        audioSamples frozenAudioSamples: [Float]? = nil
     ) async throws -> StreamSnapshot? {
         guard let whisperKit else { return nil }
         guard let decodeOptions else { return nil }
 
-        let audioSamples = Array(whisperKit.audioProcessor.audioSamples)
+        let audioSamples = frozenAudioSamples ?? Array(whisperKit.audioProcessor.audioSamples)
         return try await flushFinalAudio(
             using: decodeOptions,
             lastDecodedSamples: lastDecodedSamples,
@@ -814,7 +818,7 @@ public actor LiveWhisperEngine: WhisperEngine {
             lastDecodedSamples: lastDecodedSamples,
             sampleRate: WhisperKit.sampleRate
         ) else {
-            logger.info("Final stream flush skipped: no undecoded audio")
+            logger.info("Final stream flush skipped: no captured audio")
             return nil
         }
 
@@ -1083,7 +1087,7 @@ public actor LiveWhisperEngine: WhisperEngine {
                 self.activeStream = activeStream
                 whisperKit?.audioProcessor.stopRecording()
                 if let transcriber = activeStream.transcriber {
-                    await transcriber.stopStreamTranscription()
+                    _ = await transcriber.stopStreamTranscription()
                 }
                 return
             }

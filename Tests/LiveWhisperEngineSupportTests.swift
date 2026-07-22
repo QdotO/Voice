@@ -125,13 +125,66 @@ final class LiveWhisperEngineSupportTests: XCTestCase {
         XCTAssertLessThanOrEqual(window?.range.count ?? .max, BoundedFinalAudioWindow.maximumSeconds * sampleRate)
     }
 
-    func testFinalWindowSkipsWhenNoResidualAudioExists() {
-        XCTAssertNil(
-            BoundedFinalAudioWindow.make(
-                totalSamples: 48_000,
-                lastDecodedSamples: 48_000,
+    func testFinalWindowRechecksContextWhenNoResidualAudioExists() {
+        let window = BoundedFinalAudioWindow.make(
+            totalSamples: 48_000,
+            lastDecodedSamples: 48_000,
+            sampleRate: 16_000
+        )
+
+        XCTAssertEqual(window?.range, 16_000..<48_000)
+        XCTAssertEqual(window?.decodedSampleCount, 48_000)
+    }
+
+    func testFirstDecodeSchedulesAtHalfSecondBoundary() {
+        XCTAssertFalse(
+            LiveDecodeSchedulingPolicy.shouldSchedule(
+                nextBufferSize: 7_999,
+                lastDecodedSamples: 0,
                 sampleRate: 16_000
             )
+        )
+        XCTAssertTrue(
+            LiveDecodeSchedulingPolicy.shouldSchedule(
+                nextBufferSize: 8_000,
+                lastDecodedSamples: 0,
+                sampleRate: 16_000
+            )
+        )
+    }
+
+    func testSubsequentDecodeKeepsOneSecondCadence() {
+        XCTAssertFalse(
+            LiveDecodeSchedulingPolicy.shouldSchedule(
+                nextBufferSize: 15_999,
+                lastDecodedSamples: 8_000,
+                sampleRate: 16_000
+            )
+        )
+        XCTAssertTrue(
+            LiveDecodeSchedulingPolicy.shouldSchedule(
+                nextBufferSize: 16_000,
+                lastDecodedSamples: 8_000,
+                sampleRate: 16_000
+            )
+        )
+    }
+
+    func testFinalWindowRechecksFullyScheduledTrailingAudio() {
+        let window = BoundedFinalAudioWindow.make(
+            totalSamples: 160_000,
+            lastDecodedSamples: 160_000,
+            sampleRate: 16_000
+        )
+
+        XCTAssertEqual(window?.range, 128_000..<160_000)
+        XCTAssertEqual(window?.range.count, 32_000)
+    }
+
+    func testCaptureSettleExceedsOneMicrophoneTapInterval() {
+        XCTAssertGreaterThan(
+            LiveCaptureTailPolicy.settleNanoseconds,
+            LiveCaptureTailPolicy.microphoneTapNanoseconds
         )
     }
 
@@ -159,5 +212,17 @@ final class LiveWhisperEngineSupportTests: XCTestCase {
 
         XCTAssertEqual(merged.text, "Turn left at the next light and continue")
         XCTAssertEqual(merged.words.map(\.word), ["Turn", "left", "at", "the", "next", "light", "and", "continue"])
+    }
+
+    func testTailMergeUsesPunctuationInsensitiveOverlapWithoutDuplication() {
+        let merged = FinalTailTranscriptMerger.merge(
+            currentText: "Send it now.",
+            currentWords: [],
+            tailText: "it now please",
+            tailWords: [],
+            decodedThroughSeconds: 3
+        )
+
+        XCTAssertEqual(merged.text, "Send it now. please")
     }
 }
