@@ -78,4 +78,14 @@ Final macOS-only verification after iOS removal:
 
 External blockers: zero valid Developer ID identities, no notarization credential/profile, manual Settings/UI/VoiceOver/Reduce Motion checks incomplete, GitHub CLI token invalid.
 
+## Publish record
+
+- Release commit: `f6b9315` — `complete macOS remediation and distribution prep`
+- Integration merge: `814e5b5` — `merge main into macOS remediation`
+- Verified after merge: 340 Swift tests, crash harness, unsigned WhisperMac build, and `git diff --check` pass.
+- Remote branch and `main` both advanced to `814e5b5` by fast-forward SSH push. Repository accepted direct main push; no force push or rebase used.
+- Draft PR was not created because GitHub CLI token is invalid; direct push was explicitly authorized and accepted.
+- Local validation artifact: `dist/Whisper-1.0-macOS-unsigned-validation.zip`, SHA-256 `c69efbd6508ee28cc3f52f7e3a2a67261c6433e1408e2ececf104b9cbbb80e35`. Artifact is ad hoc/unsigned validation only, not distributable.
+- Excluded from release scope: `Design/AuditScreenshots/capture-environment.jpeg`; it shows unrelated personal Finder environment, not Whisper product UI.
+
 Commits, merge to `main`, and pushes are authorized after full validation and scope review. Force push, rebase, reset, clean, permission/system changes, credential changes, notarization submission, and final external distribution remain prohibited.
