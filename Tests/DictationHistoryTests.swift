@@ -187,4 +187,53 @@ final class DictationHistoryTests: XCTestCase {
         XCTAssertEqual(history2.allEntries().count, 1)
         XCTAssertEqual(history2.allEntries().first?.text, "persist me")
     }
+
+    func testInterleavedFacadesKeepBothAddsAndPostOneNotificationEach() {
+        let history2 = DictationHistory(baseURL: tempDir)
+        let notificationCount = LockedSnapshot(0)
+        let token = NotificationCenter.default.addObserver(
+            forName: DictationHistory.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        history.addEntry(
+            text: "first facade", durationSeconds: 1, model: "base.en", outputMethod: "type")
+        history2.addEntry(
+            text: "second facade", durationSeconds: 2, model: "tiny.en", outputMethod: "paste")
+
+        XCTAssertEqual(notificationCount.read(), 2)
+        XCTAssertEqual(
+            Set(history.allEntries().map(\.text)),
+            Set(["first facade", "second facade"])
+        )
+        XCTAssertEqual(history.allEntries().count, 2)
+    }
+
+    func testInterleavedFacadesDeleteAndClearKeepAtomicResultsAndNotificationCount() {
+        let history2 = DictationHistory(baseURL: tempDir)
+        history.addEntry(text: "keep", durationSeconds: 1, model: "base.en", outputMethod: "type")
+        history2.addEntry(
+            text: "delete", durationSeconds: 1, model: "base.en", outputMethod: "type")
+        let deletedID = history.allEntries().first { $0.text == "delete" }!.id
+
+        let notificationCount = LockedSnapshot(0)
+        let token = NotificationCenter.default.addObserver(
+            forName: DictationHistory.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        history.remove(id: deletedID)
+        history2.clear()
+
+        XCTAssertEqual(notificationCount.read(), 2)
+        XCTAssertTrue(history.allEntries().isEmpty)
+    }
 }

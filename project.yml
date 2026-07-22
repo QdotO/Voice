@@ -2,7 +2,6 @@ name: Whisper
 options:
   bundleIdPrefix: com.quincy
   deploymentTarget:
-    iOS: 26.0
     macOS: 14.0
 settings:
   base:
@@ -25,6 +24,12 @@ targets:
       - Design/Generated/WhisperV2.icns
     info:
       path: macOS/App/Info.plist
+      properties:
+        CFBundleIconFile: WhisperV2
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: Whisper needs microphone access to capture dictation.
     dependencies:
       - package: Whisper
         product: WhisperShared
@@ -32,56 +37,9 @@ targets:
         product: HotKey
     settings:
       base:
+        CODE_SIGN_ENTITLEMENTS: macOS/App/WhisperMac.entitlements
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper
         PRODUCT_NAME: Whisper
-  WhisperiOS:
-    type: application
-    platform: iOS
-    sources:
-      - iOS/App
-    resources:
-      - iOS/App/Assets.xcassets
-    info:
-      path: iOS/App/Info.plist
-      properties:
-        CFBundleDisplayName: Whisper
-        UILaunchScreen: {}
-        UIRequiresFullScreen: true
-        NSMicrophoneUsageDescription: Whisper needs microphone access to capture dictation.
-    entitlements:
-      path: iOS/App/WhisperiOS.entitlements
-    dependencies:
-      - package: Whisper
-        product: WhisperShared
-      - target: WhisperKeyboard
-        embed: true
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.ios
-        TARGETED_DEVICE_FAMILY: 1
-  WhisperKeyboard:
-    type: app-extension
-    platform: iOS
-    sources:
-      - iOS/Keyboard
-    info:
-      path: iOS/Keyboard/Info.plist
-      properties:
-        CFBundleDisplayName: Whisper Keyboard
-        NSMicrophoneUsageDescription: Whisper Keyboard needs microphone access to capture dictation.
-        NSExtension:
-          NSExtensionAttributes:
-            IsASCIICapable: true
-            PrimaryLanguage: en-US
-            RequestsOpenAccess: false
-          NSExtensionPointIdentifier: com.apple.keyboard-service
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
-    entitlements:
-      path: iOS/Keyboard/WhisperKeyboard.entitlements
-    dependencies:
-      - package: Whisper
-        product: WhisperShared
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.quincy.whisper.ios.keyboard
-        TARGETED_DEVICE_FAMILY: 1
+        SWIFT_VERSION: 6.0

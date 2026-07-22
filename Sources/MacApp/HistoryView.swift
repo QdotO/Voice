@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WhisperShared
 
@@ -8,6 +9,9 @@ struct HistoryView: View {
     @State private var methodFilter: HistoryMethodFilter = .all
     @State private var selectedTab: HistorySurfaceTab = .history
     @State private var correctionEntry: DictationHistoryEntry?
+    @State private var selectedHistoryIDs = Set<UUID>()
+    @State private var selectedCorrectionIDs = Set<UUID>()
+    @State private var pendingDestructiveAction: HistoryDestructiveAction?
 
     private let history = DictationHistory.shared
     private let correctionEngine = CorrectionEngine.shared
@@ -32,7 +36,10 @@ struct HistoryView: View {
                 }
             }
         }
-        .frame(width: 680, height: 500)
+        .frame(
+            minWidth: WhisperWindowLayout.historyMinimum.width,
+            minHeight: WhisperWindowLayout.historyMinimum.height
+        )
         .onAppear(perform: refresh)
         .onReceive(
             NotificationCenter.default.publisher(for: DictationHistory.didChangeNotification)
@@ -50,55 +57,46 @@ struct HistoryView: View {
             })
             .frame(minWidth: 620, minHeight: 430)
         }
+        .alert(item: $pendingDestructiveAction) { action in
+            Alert(
+                title: Text(action.title),
+                message: Text(action.message),
+                primaryButton: .destructive(Text(action.confirmButtonTitle)) {
+                    perform(action)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("History & Corrections")
-                    .font(.system(size: 20, weight: .semibold))
-                Text(selectedTab.subtitle)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                headerTitle
+                Spacer()
+                surfacePicker
+                methodPicker
+                searchField
+                    .frame(width: 200)
+                clearButton
             }
 
-            Spacer()
-
-            Picker("Surface", selection: $selectedTab) {
-                ForEach(HistorySurfaceTab.allCases, id: \.self) { tab in
-                    Text(tab.label).tag(tab)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    headerTitle
+                    Spacer()
+                    clearButton
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
 
-            if selectedTab == .history {
-                Picker("", selection: $methodFilter) {
-                    ForEach(HistoryMethodFilter.allCases, id: \.self) { filter in
-                        Text(filter.label).tag(filter)
-                    }
+                HStack(spacing: 8) {
+                    surfacePicker
+                        .frame(maxWidth: .infinity)
+                    methodPicker
                 }
-                .labelsHidden()
-                .frame(width: 140)
-            }
 
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField(selectedTab.searchPlaceholder, text: $searchText)
-                    .textFieldStyle(.plain)
+                searchField
+                    .frame(maxWidth: .infinity)
             }
-            .padding(6)
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(6)
-            .frame(width: 200)
-
-            Button(action: clearActiveSurface) {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.plain)
-            .disabled(isActiveCollectionEmpty)
-            .opacity(isActiveCollectionEmpty ? 0.5 : 1)
         }
         .padding(20)
         .background(
@@ -116,36 +114,103 @@ struct HistoryView: View {
         )
     }
 
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("History & Corrections")
+                .font(.system(size: 20, weight: .semibold))
+            Text(selectedTab.subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var surfacePicker: some View {
+        Picker("Surface", selection: $selectedTab) {
+            ForEach(HistorySurfaceTab.allCases, id: \.self) { tab in
+                Text(tab.label).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 220)
+    }
+
+    @ViewBuilder
+    private var methodPicker: some View {
+        if selectedTab == .history {
+            Picker("", selection: $methodFilter) {
+                ForEach(HistoryMethodFilter.allCases, id: \.self) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 140)
+        }
+    }
+
+    private var searchField: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField(selectedTab.searchPlaceholder, text: $searchText)
+                .textFieldStyle(.plain)
+        }
+        .padding(6)
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(6)
+    }
+
+    private var clearButton: some View {
+        Button(action: clearActiveSurface) {
+            Image(systemName: "trash")
+        }
+        .buttonStyle(.whisperIconButton(isDestructive: true))
+        .disabled(isActiveCollectionEmpty)
+        .opacity(isActiveCollectionEmpty ? 0.5 : 1)
+        .accessibilityLabel(selectedTab == .history ? "Clear all History" : "Clear all Corrections")
+        .accessibilityHint("Opens confirmation before removing all items")
+        .help(selectedTab == .history ? "Clear history" : "Clear corrections")
+    }
+
     private var historyList: some View {
-        List(filteredEntries) { entry in
-            HistoryRow(
-                entry: entry,
-                onCopy: { copy(entry) },
-                onPaste: { paste(entry) },
-                onCorrect: { correctionEntry = entry },
-                onDelete: { history.remove(id: entry.id) }
-            )
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .padding(.vertical, 4)
+        List(selection: $selectedHistoryIDs) {
+            ForEach(filteredEntries) { entry in
+                HistoryRow(
+                    entry: entry,
+                    isSelected: selectedHistoryIDs.contains(entry.id),
+                    onCopy: { copy(entry) },
+                    onPaste: { paste(entry) },
+                    onCorrect: { correctionEntry = entry },
+                    onDelete: { requestDeleteHistory(ids: [entry.id]) }
+                )
+                .tag(entry.id)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 4)
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .onDeleteCommand(perform: requestDeleteSelected)
     }
 
     private var correctionList: some View {
-        List(filteredCorrections) { correction in
-            LearnedCorrectionRow(
-                correction: correction,
-                onCopy: { copy(correction.correctedText) },
-                onDelete: { correctionEngine.removeCorrection(id: correction.id) }
-            )
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .padding(.vertical, 4)
+        List(selection: $selectedCorrectionIDs) {
+            ForEach(filteredCorrections) { correction in
+                LearnedCorrectionRow(
+                    correction: correction,
+                    isSelected: selectedCorrectionIDs.contains(correction.id),
+                    onCopy: { copy(correction.correctedText) },
+                    onDelete: { requestDeleteCorrections(ids: [correction.id]) }
+                )
+                .tag(correction.id)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 4)
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .onDeleteCommand(perform: requestDeleteSelected)
     }
 
     private var emptyState: some View {
@@ -230,19 +295,67 @@ struct HistoryView: View {
     private func clearActiveSurface() {
         switch selectedTab {
         case .history:
-            history.clear()
+            guard !entries.isEmpty else { return }
+            pendingDestructiveAction = .clearHistory(count: entries.count)
         case .corrections:
-            correctionEngine.clearCorrections()
+            guard !corrections.isEmpty else { return }
+            pendingDestructiveAction = .clearCorrections(count: corrections.count)
         }
     }
 
-    private func copy(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+    private func requestDeleteSelected() {
+        switch selectedTab {
+        case .history:
+            requestDeleteHistory(ids: selectedHistoryIDs)
+        case .corrections:
+            requestDeleteCorrections(ids: Array(selectedCorrectionIDs))
+        }
     }
 
-    private func copy(_ entry: DictationHistoryEntry) {
-        copy(entry.text)
+    private func requestDeleteHistory(ids: Set<UUID>) {
+        requestDeleteHistory(ids: Array(ids))
+    }
+
+    private func requestDeleteHistory(ids: [UUID]) {
+        let validIDs = ids.filter { id in entries.contains { $0.id == id } }
+        guard !validIDs.isEmpty else { return }
+        pendingDestructiveAction = .deleteTranscriptions(ids: validIDs)
+    }
+
+    private func requestDeleteCorrections(ids: [UUID]) {
+        let validIDs = ids.filter { id in corrections.contains { $0.id == id } }
+        guard !validIDs.isEmpty else { return }
+        pendingDestructiveAction = .deleteCorrections(ids: validIDs)
+    }
+
+    private func perform(_ action: HistoryDestructiveAction) {
+        switch action {
+        case .deleteTranscriptions(let ids):
+            ids.forEach { history.remove(id: $0) }
+            selectedHistoryIDs.subtract(ids)
+        case .deleteCorrections(let ids):
+            ids.forEach { correctionEngine.removeCorrection(id: $0) }
+            selectedCorrectionIDs.subtract(ids)
+        case .clearHistory:
+            history.clear()
+            selectedHistoryIDs.removeAll()
+        case .clearCorrections:
+            correctionEngine.clearCorrections()
+            selectedCorrectionIDs.removeAll()
+        }
+    }
+
+    private func copy(_ value: String, announcement: String = "Copied text to clipboard") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        announce(announcement)
+    }
+
+    private func copy(
+        _ entry: DictationHistoryEntry,
+        announcement: String = "Copied text to clipboard"
+    ) {
+        copy(entry.text, announcement: announcement)
     }
 
     private func paste(_ entry: DictationHistoryEntry) {
@@ -251,21 +364,29 @@ struct HistoryView: View {
                 _ = try await textInsertionService.insert(
                     TextInsertionRequest(text: entry.text, preserveClipboard: true)
                 )
+                announce("Pasted transcription into active app")
             } catch {
-                copy(entry)
+                copy(entry, announcement: "Could not paste. Copied transcription to clipboard instead")
             }
         }
+    }
+
+    private func announce(_ message: String) {
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [.announcement: message]
+        )
     }
 }
 
 private struct HistoryRow: View {
     let entry: DictationHistoryEntry
+    let isSelected: Bool
     let onCopy: () -> Void
     let onPaste: () -> Void
     let onCorrect: () -> Void
     let onDelete: () -> Void
-    @State private var isHovering = false
-
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
@@ -293,51 +414,48 @@ private struct HistoryRow: View {
 
             Spacer()
 
-            if isHovering {
+            if isSelected {
                 HStack(spacing: 4) {
                     Button(action: onCopy) {
                         Image(systemName: "doc.on.doc.fill")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.white.opacity(0.1))
-                            .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.whisperIconButton())
+                    .keyboardShortcut("c", modifiers: .command)
+                    .accessibilityLabel("Copy transcription")
+                    .accessibilityHint("Copies selected transcription to clipboard")
                     .help("Copy to clipboard")
-
-                    Button(action: onPaste) {
-                        Image(systemName: "arrow.down.doc.fill")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.white.opacity(0.1))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Paste into active app")
 
                     Button(action: onCorrect) {
                         Image(systemName: "pencil.and.outline")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.white.opacity(0.1))
-                            .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.whisperIconButton())
+                    .accessibilityLabel("Correct transcription")
+                    .accessibilityHint("Opens correction editor for selected transcription")
                     .help("Correct and teach")
-
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash.fill")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.red.opacity(0.2))
-                            .clipShape(Circle())
-                            .foregroundColor(.red.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete entry")
                 }
-                .transition(.opacity)
             }
+
+            Menu {
+                Button(action: onCopy) {
+                    Label("Copy to Clipboard", systemImage: "doc.on.doc.fill")
+                }
+                Button(action: onPaste) {
+                    Label("Paste into Active App", systemImage: "arrow.down.doc.fill")
+                }
+                Button(action: onCorrect) {
+                    Label("Correct and Teach", systemImage: "pencil.and.outline")
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete Transcription", systemImage: "trash.fill")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .buttonStyle(.whisperIconButton())
+            .accessibilityLabel("More transcription actions")
+            .accessibilityHint("Opens copy, paste, correct, and delete actions")
+            .help("More transcription actions")
         }
         .padding(12)
         .background(
@@ -346,13 +464,10 @@ private struct HistoryRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(isHovering ? 0.2 : 0.05), lineWidth: 1)
+                .stroke(isSelected ? DesignSystem.Stroke.strong : DesignSystem.Stroke.subtle, lineWidth: 1)
         )
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isHovering = hovering
-            }
-        }
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 
     private func timeString(_ date: Date) -> String {
@@ -371,9 +486,9 @@ private struct HistoryRow: View {
 
 private struct LearnedCorrectionRow: View {
     let correction: CorrectionRecord
+    let isSelected: Bool
     let onCopy: () -> Void
     let onDelete: () -> Void
-    @State private var isHovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -407,31 +522,34 @@ private struct LearnedCorrectionRow: View {
 
             Spacer()
 
-            if isHovering {
+            if isSelected {
                 HStack(spacing: 4) {
                     Button(action: onCopy) {
                         Image(systemName: "doc.on.doc.fill")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.white.opacity(0.1))
-                            .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.whisperIconButton())
+                    .keyboardShortcut("c", modifiers: .command)
+                    .accessibilityLabel("Copy learned correction")
+                    .accessibilityHint("Copies corrected text to clipboard")
                     .help("Copy corrected text")
-
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash.fill")
-                            .font(.system(size: 11))
-                            .frame(width: 24, height: 24)
-                            .background(Color.red.opacity(0.2))
-                            .clipShape(Circle())
-                            .foregroundColor(.red.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete correction")
                 }
-                .transition(.opacity)
             }
+
+            Menu {
+                Button(action: onCopy) {
+                    Label("Copy Corrected Text", systemImage: "doc.on.doc.fill")
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete Learned Correction", systemImage: "trash.fill")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .buttonStyle(.whisperIconButton())
+            .accessibilityLabel("More correction actions")
+            .accessibilityHint("Opens copy and delete actions")
+            .help("More correction actions")
         }
         .padding(12)
         .background(
@@ -440,13 +558,10 @@ private struct LearnedCorrectionRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(isHovering ? 0.2 : 0.05), lineWidth: 1)
+                .stroke(isSelected ? DesignSystem.Stroke.strong : DesignSystem.Stroke.subtle, lineWidth: 1)
         )
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isHovering = hovering
-            }
-        }
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 
     private func timeString(_ date: Date) -> String {

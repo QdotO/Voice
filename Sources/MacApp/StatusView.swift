@@ -1,16 +1,37 @@
 import AppKit
 import Foundation
 import SwiftUI
+import WhisperShared
 
+@MainActor
 final class StatusViewModel: ObservableObject {
-    @Published var state: DictationState
+    @Published var state: DictationState {
+        didSet {
+            guard oldValue != state else { return }
+            NSAccessibility.post(
+                element: NSApplication.shared,
+                notification: .announcementRequested,
+                userInfo: [.announcement: state.presentation.statusItemAccessibilityDescription]
+            )
+        }
+    }
     @Published var lastText: String
     @Published var level: Float
+    @Published var useCustomWaveColor: Bool
+    @Published var waveColorHex: String
 
-    init(state: DictationState = .loading, lastText: String = "", level: Float = 0) {
+    init(
+        state: DictationState = .loading,
+        lastText: String = "",
+        level: Float = 0,
+        useCustomWaveColor: Bool = false,
+        waveColorHex: String = ""
+    ) {
         self.state = state
         self.lastText = lastText
         self.level = level
+        self.useCustomWaveColor = useCustomWaveColor
+        self.waveColorHex = waveColorHex
     }
 }
 
@@ -18,13 +39,27 @@ final class StatusViewModel: ObservableObject {
 struct StatusView: View {
     @ObservedObject var viewModel: StatusViewModel
     let onAbort: (() -> Void)?
+    let onRecovery: ((DictationRecoveryAction) -> Void)?
+
+    init(
+        viewModel: StatusViewModel,
+        onAbort: (() -> Void)?,
+        onRecovery: ((DictationRecoveryAction) -> Void)? = nil
+    ) {
+        self.viewModel = viewModel
+        self.onAbort = onAbort
+        self.onRecovery = onRecovery
+    }
 
     var body: some View {
         DynamicIslandView(
             state: viewModel.state,
             level: viewModel.level,
             lastText: viewModel.lastText,
-            onAbort: onAbort
+            onAbort: onAbort,
+            onRecovery: onRecovery,
+            useCustomWaveColor: viewModel.useCustomWaveColor,
+            waveColorHex: viewModel.waveColorHex
         )
     }
 }
@@ -32,25 +67,29 @@ struct StatusView: View {
 // MARK: - Dynamic Dynamic Island
 
 private struct DynamicIslandView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let state: DictationState
     let level: Float
     let lastText: String
     let onAbort: (() -> Void)?
+    let onRecovery: ((DictationRecoveryAction) -> Void)?
+    let useCustomWaveColor: Bool
+    let waveColorHex: String
 
     var body: some View {
         HStack(spacing: 0) {
             // Dynamic Content
             dynamicContent
-                .transition(.opacity.combined(with: .scale))
+                .transition(reduceMotion ? .identity : .opacity)
                 .padding(.leading, 12)
 
             Spacer(minLength: 0)
         }
-        .frame(height: 76)
-        .frame(minWidth: state.isRecording ? 180 : 140, maxWidth: state.isRecording ? 180 : 320)
+        .frame(width: CGFloat(FloatingStatusLayout.islandWidth), height: 70)
         .background(
             Capsule()
-                .fill(Color.black)
+                .fill(DesignSystem.Surface.inset)
                 .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
         )
         .overlay(
@@ -64,45 +103,82 @@ private struct DynamicIslandView: View {
                     lineWidth: state.isRecording ? 1.0 + CGFloat(level * 2.5) : 1.5
                 )
                 .opacity(state.isRecording ? 0.6 + Double(level * 0.4) : 0.3)
-                .animation(.linear(duration: 0.1), value: level)
+                .animation(reduceMotion ? nil : .linear(duration: 0.1), value: level)
         )
-        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: state)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: state)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Whisper status")
+        .accessibilityValue(accessibilityValue)
     }
 
     @ViewBuilder
     private var dynamicContent: some View {
         if state.isRecording {
-            IslandWaveformView(level: level)
+            IslandWaveformView(
+                level: level,
+                useCustomWaveColor: useCustomWaveColor,
+                waveColorHex: waveColorHex,
+                reduceMotion: reduceMotion
+            )
                 .frame(width: 120, height: 48)
                 .padding(.horizontal, 8)
         } else if case .processing = state {
             HStack(spacing: 8) {
-                Text("Processing...")
+                Text(state.presentation.title)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundColor(.white)
+                    .foregroundStyle(DesignSystem.Text.primary)
 
                 if let onAbort = onAbort {
-                    Button(action: onAbort) {
+                    Button(role: .cancel, action: onAbort) {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.gray)
+                            .foregroundStyle(DesignSystem.Text.secondary)
                             .font(.system(size: 14))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel transcription")
+                    .accessibilityHint("Stops current transcription and returns to Ready")
+                    .help("Cancel transcription")
+                }
+            }
+            .padding(.horizontal, 8)
+        } else if case .error = state {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(state.presentation.title)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(DesignSystem.Text.primary)
+                    if let detail = state.presentation.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(DesignSystem.Text.secondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                if let action = state.presentation.recoveryAction, let onRecovery {
+                    Button(recoveryLabel(for: action)) {
+                        onRecovery(action)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel(recoveryLabel(for: action))
+                    .accessibilityHint(recoveryHint(for: action))
+                    .help(recoveryHelp(for: action))
                 }
             }
             .padding(.horizontal, 8)
         } else {
             HStack(spacing: 6) {
-                Text(state.label)
+                Text(state.presentation.title)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundColor(.white)
+                    .foregroundStyle(DesignSystem.Text.primary)
 
                 if !lastText.isEmpty && state.isReady {
                     Text("•")
-                        .foregroundColor(.gray)
+                        .foregroundStyle(DesignSystem.Text.tertiary)
                     Text(lastText)
                         .font(.system(size: 13, design: .rounded))
-                        .foregroundColor(.white.opacity(0.7))
+                        .foregroundStyle(DesignSystem.Text.secondary)
                         .lineLimit(1)
                 }
             }
@@ -110,46 +186,106 @@ private struct DynamicIslandView: View {
         }
     }
 
+    private func recoveryLabel(for action: DictationRecoveryAction) -> String {
+        switch action {
+        case .retry:
+            return "Retry"
+        case .openPermissions:
+            return "Open Permissions"
+        case .openSettings:
+            return "Open Settings"
+        }
+    }
+
+    private func recoveryHint(for action: DictationRecoveryAction) -> String {
+        switch action {
+        case .retry:
+            return "Retries dictation"
+        case .openPermissions:
+            return "Opens System Settings so Whisper permissions can be enabled"
+        case .openSettings:
+            return "Opens Whisper settings"
+        }
+    }
+
+    private func recoveryHelp(for action: DictationRecoveryAction) -> String {
+        switch action {
+        case .retry:
+            return "Retry dictation"
+        case .openPermissions:
+            return "Open permissions"
+        case .openSettings:
+            return "Open Whisper settings"
+        }
+    }
+
+    private var accessibilityValue: String {
+        var values = [state.presentation.title]
+        if let detail = state.presentation.detail, !detail.isEmpty {
+            values.append(detail.replacingOccurrences(of: "\n", with: ". "))
+        }
+        if state.isReady && !lastText.isEmpty {
+            values.append("Latest transcription: \(lastText)")
+        }
+        return values.joined(separator: ". ")
+    }
+
     private var borderColors: [Color] {
         if state.isRecording || state == .processing {
-            // Golden Hour Scheme: Orange -> Yellow
-            return [
-                Color(red: 1.0, green: 0.27, blue: 0.0), Color(red: 1.0, green: 0.84, blue: 0.0),
-            ]
+            return state.isRecording
+                ? [DesignSystem.States.active, DesignSystem.States.activeBright]
+                : [DesignSystem.States.processing, DesignSystem.States.warning]
         } else if case .error = state {
-            return [.red, .orange]
+            return [DesignSystem.States.danger, DesignSystem.States.warning]
         }
-        return [.white.opacity(0.15), .white.opacity(0.05)]
+        return [DesignSystem.Stroke.strong, DesignSystem.Stroke.subtle]
     }
 }
 
 private struct IslandWaveformView: View {
     let level: Float
+    let useCustomWaveColor: Bool
+    let waveColorHex: String
+    let reduceMotion: Bool
 
+    @ViewBuilder
     var body: some View {
-        TimelineView(.animation) { context in
-            let rawTick = Int(context.date.timeIntervalSinceReferenceDate * 12)
-            // Noise gate so room hiss does not look like speech activity.
-            let gatedLevel = max(0, min(1, (level - 0.12) / 0.88))
-            // Keep near-silence mostly static instead of constantly flickering.
-            let tick = gatedLevel < 0.02 ? 0 : rawTick
-
-            Text(ASCIIWavefield.make(level: gatedLevel, tick: tick))
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 1.0, green: 0.35, blue: 0.0),
-                            Color(red: 1.0, green: 0.82, blue: 0.05),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .clipped()
+        if reduceMotion {
+            waveform(tick: 0)
+        } else {
+            TimelineView(.animation) { context in
+                let rawTick = Int(context.date.timeIntervalSinceReferenceDate * 12)
+                // Noise gate so room hiss does not look like speech activity.
+                let gatedLevel = max(0, min(1, (level - 0.12) / 0.88))
+                // Keep near-silence mostly static instead of constantly flickering.
+                let tick = gatedLevel < 0.02 ? 0 : rawTick
+                waveform(tick: tick)
+            }
         }
+    }
+
+    private func waveform(tick: Int) -> some View {
+        let gatedLevel = max(0, min(1, (level - 0.12) / 0.88))
+        return Text(ASCIIWavefield.make(level: gatedLevel, tick: tick))
+            .font(.system(size: 8, weight: .regular, design: .monospaced))
+            .foregroundStyle(
+                LinearGradient(
+                    colors: waveColors,
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .clipped()
+    }
+
+    private var waveColors: [Color] {
+        let selection = FloatingWaveColorResolver.resolve(
+            useCustomColor: useCustomWaveColor,
+            hex: waveColorHex
+        )
+        return [Color(statusHex: selection.primaryHex), Color(statusHex: selection.secondaryHex)]
     }
 }
 
@@ -233,24 +369,41 @@ enum DictationState: Equatable {
     }
 
     var label: String {
+        presentation.title
+    }
+
+    var presentationState: DictationPresentationState {
         switch self {
-        case .loading: return "Loading model..."
-        case .ready: return "Ready"
-        case .recording: return "Listening..."
-        case .processing: return "Processing..."
-        case .error(let msg): return "Error: \(msg)"
+        case .loading:
+            return .preparingModel
+        case .ready:
+            return .ready
+        case .recording:
+            return .listening
+        case .processing:
+            return .transcribing
+        case let .error(detail):
+            return .failure(
+                kind: DictationStatePresentation.classifyFailure(detail),
+                detail: detail
+            )
         }
+    }
+
+    var presentation: DictationStatePresentation {
+        DictationStatePresentation(state: presentationState)
     }
 
     var color: Color {
         switch self {
-        case .loading: return .orange
-        case .ready: return .green
-        case .recording: return .red
-        case .processing: return .blue
-        case .error: return .red
+        case .loading: return DesignSystem.States.processing
+        case .ready: return DesignSystem.States.success
+        case .recording: return DesignSystem.States.active
+        case .processing: return DesignSystem.States.processing
+        case .error: return DesignSystem.States.danger
         }
     }
+
 }
 
 #Preview {
@@ -267,4 +420,17 @@ enum DictationState: Equatable {
         )
     }
     .padding()
+}
+
+private extension Color {
+    init(statusHex hex: String) {
+        let value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        let number = UInt32(value, radix: 16) ?? 0xFF6A32
+        self.init(
+            red: Double((number >> 16) & 0xFF) / 255,
+            green: Double((number >> 8) & 0xFF) / 255,
+            blue: Double(number & 0xFF) / 255
+        )
+    }
 }

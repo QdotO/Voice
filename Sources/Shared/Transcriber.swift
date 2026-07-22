@@ -1,8 +1,9 @@
 import Foundation
 import OSLog
-import WhisperKit
+@preconcurrency import WhisperKit
 
 /// Handles speech-to-text transcription using WhisperKit
+@MainActor
 public final class Transcriber {
     private let logger = Logger(subsystem: "Whisper", category: "Transcriber")
     private var whisperKit: WhisperKit?
@@ -14,8 +15,8 @@ public final class Transcriber {
     /// Vocabulary prompt for context
     public var vocabularyPrompt: String = ""
 
-    public var onModelLoaded: ((Bool, String?) -> Void)?
-    public var onError: ((String) -> Void)?
+    public var onModelLoaded: (@Sendable (Bool, String?) -> Void)?
+    public var onError: (@Sendable (String) -> Void)?
 
     public init() {}
 

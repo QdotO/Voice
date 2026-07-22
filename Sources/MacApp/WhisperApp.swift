@@ -7,21 +7,42 @@ import WhisperShared
 @main
 struct WhisperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @Environment(\.openSettings) private var openSettings
 
     var body: some Scene {
+        let _ = appDelegate.registerNativeSettingsAction(openSettings)
+
         Settings {
             SettingsView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appDelegate.openGeneralSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private enum DictationTrigger: String {
-        case hotkey
-        case capsLock
-        case ui
-    }
+enum WhisperWindowLayout {
+    static let mainDefault = WhisperWindowSize(width: 860, height: 640)
+    static let mainMinimum = WhisperWindowSize(width: 640, height: 520)
+    static let settingsMinimum = WhisperWindowSize(width: 620, height: 520)
+    static let historyDefault = WhisperWindowSize(width: 760, height: 560)
+    static let historyMinimum = WhisperWindowSize(width: 640, height: 460)
+    static let voiceMemosDefault = WhisperWindowSize(width: 900, height: 620)
+    static let voiceMemosMinimum = WhisperWindowSize(width: 720, height: 500)
+}
 
+struct WhisperWindowSize {
+    let width: CGFloat
+    let height: CGFloat
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum OutputMethod {
         case ax
         case paste
@@ -48,15 +69,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarOnlyHotkey: HotKey?
     private var statusWindow: NSWindow?
     private var statusHostingView: NSHostingView<StatusView>?
+    private var immersiveHostingView: NSHostingView<ImmersiveWaveformView>?
     private var menuBarOnlyItem: NSMenuItem?
     private var historyMenu: NSMenu?
     private var historyWindow: NSWindow?
     private var voiceMemosWindow: NSWindow?
-    private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
     private var immersiveModeWindow: NSWindow?
     private var immersiveModeMenuItem: NSMenuItem?
-    private var processingBarWindow: NSWindow?
     private var hotkeyMonitor: NSObjectProtocol?
     private var capsLockEventTap: CFMachPort?
     private var capsLockRunLoopSource: CFRunLoopSource?
@@ -85,7 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let promptProvider = DefaultTranscriptionPromptProvider.live()
     private lazy var dictationCoordinator = DefaultDictationCoordinator(
         engine: liveWhisperEngine,
-        settingsStore: dictationSettingsStore,
+        // Coordinator owns its store instance. Avoid transferring main-actor-owned
+        // reference into actor while UI and VoiceMemoManager keep using theirs.
+        settingsStore: LegacyAppPreferencesSettingsStore(),
         promptProvider: { [promptProvider] in
             await promptProvider.makePrompt()
         }
@@ -118,11 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasCompletedHotkeyMetric = false
     private var hasMarkedSpeechStartMetric = false
     private var hasCompletedSpeechPartialMetric = false
+    private var openSettingsAction: OpenSettingsAction?
+    private var pendingSettingsTab: SettingsTab?
 
     private var isRecording = false
     private var state: DictationState = .loading {
         didSet { updateUI() }
     }
+    private var recordingTrigger: DictationRecordingTrigger = .hotkey
     private var lastTranscription = "" {
         didSet { updateUI() }
     }
@@ -153,6 +178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusWindow()
         markMetric(.launchToReady, context: ["model": currentPreparation().resolvedModelName])
         requestPermissionsAndLoad()
+    }
+
+    func registerNativeSettingsAction(_ action: OpenSettingsAction) {
+        openSettingsAction = action
+        guard pendingSettingsTab != nil else { return }
+        pendingSettingsTab = nil
+        presentNativeSettings()
+    }
+
+    func openGeneralSettings() {
+        openSettingsTab(.general)
     }
 
     private func requestPermissionsAndLoad() {
@@ -230,17 +266,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let button = statusItem.button {
             button.image = NSImage(
-                systemSymbolName: "waveform", accessibilityDescription: "Whisper")
+                systemSymbolName: "waveform", accessibilityDescription: nil)
+            button.setAccessibilityHelp("Opens Whisper menu")
         }
 
         let menu = NSMenu()
         menu.addItem(
             NSMenuItem(
                 title: "Main Window...", action: #selector(openMainWindow), keyEquivalent: "0"))
-        menu.addItem(
-            NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        let settingsItem = NSMenuItem(
+            title: "Settings...", action: #selector(openSettingsMenuItem(_:)), keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         let menuBarOnlyItem = NSMenuItem(
-            title: "Menu Bar Only Mode",
+            title: "Menu bar only",
             action: #selector(toggleMenuBarOnlyMode),
             keyEquivalent: ""
         )
@@ -249,7 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(menuBarOnlyItem)
         self.menuBarOnlyItem = menuBarOnlyItem
         let immersiveItem = NSMenuItem(
-            title: "Immersive Mode",
+            title: "Immersive recording",
             action: #selector(toggleImmersiveMode),
             keyEquivalent: "i"
         )
@@ -292,11 +332,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshHotkeyIfNeeded()
-            self?.refreshStatusPositionIfNeeded()
-            self?.refreshCapsLockMonitorIfNeeded()
-            self?.refreshPreparedModelIfNeeded()
-            self?.updateUI()
+            Task { @MainActor [weak self] in
+                self?.refreshHotkeyIfNeeded()
+                self?.refreshStatusPositionIfNeeded()
+                self?.refreshCapsLockMonitorIfNeeded()
+                self?.refreshPreparedModelIfNeeded()
+                self?.updateUI()
+            }
         }
     }
 
@@ -352,6 +394,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return KeyCombo(
             carbonKeyCode: UInt32(stopHotkeyKeyCode),
             carbonModifiers: UInt32(stopHotkeyModifiers)
+        )
+    }
+
+    private var currentStopHotkeyDisplay: String? {
+        guard let combo = currentStopKeyCombo() else { return nil }
+        let description = combo.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? nil : description
+    }
+
+    private var currentStopInstruction: String {
+        DictationStopInstructionPolicy.instruction(
+            trigger: recordingTrigger,
+            capsLockEnabled: enableCapsLockHoldToDictate,
+            stopHotkeyDisplay: currentStopHotkeyDisplay
         )
     }
 
@@ -516,6 +572,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 viewModel: statusViewModel,
                 onAbort: { [weak self] in
                     self?.abortTranscription()
+                },
+                onRecovery: { [weak self] action in
+                    self?.handleRecovery(action)
                 })
         )
         hostingView.frame = contentView.bounds
@@ -592,50 +651,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentStatusOverlayPosition = statusOverlayPosition
     }
 
-    private func setupSettingsWindow() {
-        setupSettingsWindow(initialTab: .general)
-    }
-
-    private func setupSettingsWindow(initialTab: SettingsTab) {
-        if let window = settingsWindow {
-            window.contentView = NSHostingView(rootView: SettingsView(initialTab: initialTab))
-            return
-        }
-
-        let hostingView = NSHostingView(rootView: SettingsView(initialTab: initialTab))
-        let windowSize = NSSize(width: 600, height: 500)
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Settings"
-        window.contentView = hostingView
-        window.setContentSize(windowSize)
-        window.contentMinSize = windowSize
-        window.contentMaxSize = windowSize
-        window.isReleasedWhenClosed = false
-        window.center()
-        settingsWindow = window
-    }
-
     private func setupHistoryWindow() {
         if historyWindow != nil { return }
 
         let hostingView = NSHostingView(rootView: HistoryView())
-        let windowSize = NSSize(width: 600, height: 450)
+        let windowSize = NSSize(
+            width: WhisperWindowLayout.historyDefault.width,
+            height: WhisperWindowLayout.historyDefault.height
+        )
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Dictation History"
         window.contentView = hostingView
         window.setContentSize(windowSize)
-        window.contentMinSize = windowSize
-        window.contentMaxSize = windowSize
+        window.contentMinSize = NSSize(
+            width: WhisperWindowLayout.historyMinimum.width,
+            height: WhisperWindowLayout.historyMinimum.height
+        )
         window.isReleasedWhenClosed = false
         window.center()
         historyWindow = window
@@ -645,18 +681,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if voiceMemosWindow != nil { return }
 
         let hostingView = NSHostingView(rootView: VoiceMemosView(manager: voiceMemoManager))
-        let windowSize = NSSize(width: 720, height: 500)
+        let windowSize = NSSize(
+            width: WhisperWindowLayout.voiceMemosDefault.width,
+            height: WhisperWindowLayout.voiceMemosDefault.height
+        )
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Voice Memos"
         window.contentView = hostingView
         window.setContentSize(windowSize)
-        window.contentMinSize = windowSize
-        window.contentMaxSize = windowSize
+        window.contentMinSize = NSSize(
+            width: WhisperWindowLayout.voiceMemosMinimum.width,
+            height: WhisperWindowLayout.voiceMemosMinimum.height
+        )
         window.isReleasedWhenClosed = false
         window.center()
         voiceMemosWindow = window
@@ -670,13 +711,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusViewModel: statusViewModel,
             startDictation: { [weak self] in self?.startRecording(trigger: .ui) },
             stopDictation: { [weak self] in self?.stopRecording() },
-            openSettings: { [weak self] in self?.openSettings() },
+            openSettings: { [weak self] in self?.openGeneralSettings() },
             openHistory: { [weak self] in self?.openHistoryWindow() },
             openVoiceMemos: { [weak self] in self?.openVoiceMemosWindow() },
             openVocabulary: { [weak self] in self?.openSettingsTab(.vocabulary) }
         )
         let hostingView = NSHostingView(rootView: view)
-        let windowSize = NSSize(width: 760, height: 520)
+        let windowSize = NSSize(
+            width: WhisperWindowLayout.mainDefault.width,
+            height: WhisperWindowLayout.mainDefault.height
+        )
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -686,13 +730,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Whisper"
         window.contentView = hostingView
         window.setContentSize(windowSize)
-        window.contentMinSize = windowSize
+        window.contentMinSize = NSSize(
+            width: WhisperWindowLayout.mainMinimum.width,
+            height: WhisperWindowLayout.mainMinimum.height
+        )
         window.isReleasedWhenClosed = false
         window.center()
         mainWindow = window
     }
 
-    private func startRecording(trigger: DictationTrigger = .hotkey) {
+    private func startRecording(trigger: DictationRecordingTrigger = .hotkey) {
         guard case .ready = state else {
             logger.debug("Ignoring start request while not ready")
             return
@@ -717,6 +764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         latestSessionPartialTranscript = ""
         maxObservedAudioLevel = 0
         statusViewModel.level = 0
+        recordingTrigger = trigger
         isRecording = true
         state = .recording
         dictationTask?.cancel()
@@ -980,7 +1028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSPasteboard.general.setString(combined, forType: .string)
                 self.lastTranscription = "Copied: \(finalText)"
                 self.addHistoryEntry(text: finalText, duration: duration, method: .clipboard)
-                self.state = .ready
+                self.state = .error(error.localizedDescription)
                 self.updateHistoryMenu()
             }
         }
@@ -1144,7 +1192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func activateTargetApp() {
         guard let app = lastTargetApp, !app.isTerminated else { return }
-        app.activate(options: [.activateIgnoringOtherApps])
+        app.activate(options: [])
     }
 
     private func addHistoryEntry(text: String, duration: Float, method: OutputMethod) {
@@ -1179,6 +1227,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateUI() {
         statusViewModel.state = state
         statusViewModel.lastText = lastTranscription
+        statusViewModel.useCustomWaveColor = UserDefaults.standard.bool(forKey: "useCustomWaveColor")
+        statusViewModel.waveColorHex = UserDefaults.standard.string(forKey: "waveColorHex") ?? ""
 
         // Update menu bar icon
         let iconName: String
@@ -1196,8 +1246,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Whisper")
+            button.image = NSImage(
+                systemSymbolName: iconName,
+                accessibilityDescription: nil
+            )
+            button.setAccessibilityLabel(state.presentation.statusItemAccessibilityDescription)
+            button.setAccessibilityHelp("Opens Whisper menu")
         }
+
+        immersiveHostingView?.rootView = makeImmersiveRootView()
 
         // Update status window — immersive mode supplies its own recording surface.
         if let window = statusWindow {
@@ -1215,11 +1272,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if immersiveModeEnabled {
             if state.isRecording || state == .processing {
                 showImmersiveWindow()
-                processingBarWindow?.orderOut(nil)
             } else {
                 immersiveModeWindow?.orderOut(nil)
-                processingBarWindow?.orderOut(nil)
             }
+        }
+    }
+
+    private func handleRecovery(_ action: DictationRecoveryAction) {
+        switch action {
+        case .retry:
+            prewarmDictationEngine(force: true)
+        case .openPermissions:
+            openSettingsTab(.permissions)
+        case .openSettings:
+            openGeneralSettings()
         }
     }
 
@@ -1261,10 +1327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Actions
 
-    @objc private func openSettings() {
-        setupSettingsWindow(initialTab: .general)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    @objc func openSettingsMenuItem(_ sender: Any?) {
+        openGeneralSettings()
     }
 
     @objc private func toggleMenuBarOnlyMode() {
@@ -1292,13 +1356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupImmersiveWindow() {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.frame
-        let dockInset = max(0, screen.visibleFrame.minY - screenFrame.minY)
-        let hostingView = NSHostingView(
-            rootView: ImmersiveWaveformView(
-                viewModel: statusViewModel,
-                bottomInset: dockInset
-            )
-        )
+        let hostingView = NSHostingView(rootView: makeImmersiveRootView())
         hostingView.frame = NSRect(origin: .zero, size: screenFrame.size)
         hostingView.autoresizingMask = [.width, .height]
 
@@ -1317,45 +1375,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
         window.contentView = hostingView
+        immersiveHostingView = hostingView
         self.immersiveModeWindow = window
     }
 
-    private func showProcessingBar() {
-        if processingBarWindow == nil { setupProcessingBarWindow() }
-        processingBarWindow?.orderFrontRegardless()
-    }
-
-    private func setupProcessingBarWindow() {
-        guard let screen = NSScreen.main else { return }
-        let sf = screen.frame
-        let barHeight = CGFloat(6)
-        let windowFrame = NSRect(x: sf.minX, y: sf.minY, width: sf.width, height: barHeight)
-
-        let hostingView = NSHostingView(rootView: ImmersiveProcessingView())
-        hostingView.frame = NSRect(origin: .zero, size: windowFrame.size)
-
-        let window = NSWindow(
-            contentRect: windowFrame,
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false,
-            screen: screen
+    private func makeImmersiveRootView() -> ImmersiveWaveformView {
+        let screenFrame = NSScreen.main?.frame ?? .zero
+        let visibleFrame = NSScreen.main?.visibleFrame ?? screenFrame
+        let dockInset = max(0, visibleFrame.minY - screenFrame.minY)
+        return ImmersiveWaveformView(
+            viewModel: statusViewModel,
+            bottomInset: dockInset,
+            stopInstruction: currentStopInstruction
         )
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        window.isReleasedWhenClosed = false
-        window.contentView = hostingView
-        self.processingBarWindow = window
     }
 
     private func openSettingsTab(_ tab: SettingsTab) {
-        setupSettingsWindow(initialTab: tab)
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        UserDefaults.standard.set(tab.rawValue, forKey: SettingsTab.selectionStorageKey)
+        guard openSettingsAction != nil else {
+            pendingSettingsTab = tab
+            logger.debug("Queuing native Settings action until SwiftUI registers it")
+            return
+        }
+        presentNativeSettings()
+    }
+
+    private func presentNativeSettings() {
+        guard let openSettingsAction else { return }
         NSApp.activate(ignoringOtherApps: true)
+        openSettingsAction()
     }
 
     @objc private func openHistoryWindow() {
@@ -1387,6 +1435,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func clearHistory() {
+        let entries = dictationHistory.allEntries()
+        guard !entries.isEmpty else { return }
+
+        let action = HistoryDestructiveAction.clearHistory(count: entries.count)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = action.title
+        alert.informativeText = action.message
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: action.confirmButtonTitle)
+
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
         dictationHistory.clear()
         updateHistoryMenu()
     }

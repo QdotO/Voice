@@ -8,6 +8,7 @@ struct SettingsView: View {
     @AppStorage("selectedModel") private var selectedModel = "base.en"
     @AppStorage("showStatusIndicator") private var showStatusIndicator = true
     @AppStorage("menuBarOnlyMode") private var menuBarOnlyMode = false
+    @AppStorage("immersiveModeEnabled") private var immersiveModeEnabled = false
     @AppStorage("usePaste") private var usePaste = false
     @AppStorage("alwaysCopyToClipboard") private var alwaysCopyToClipboard = true
     @AppStorage("useCustomStatusPosition") private var useCustomStatusPosition = false
@@ -36,14 +37,11 @@ struct SettingsView: View {
     @State private var showAdvancedModelOptions = false
 
     private let vocab = Vocabulary.shared
-    @State private var selectedTab: SettingsTab
+    @AppStorage(SettingsTab.selectionStorageKey) private var selectedTab = SettingsTab.general
     @State private var isRecordingShortcut = false
     @State private var isRecordingStopShortcut = false
     @State private var vocabularyRevision = 0
-
-    init(initialTab: SettingsTab = .general) {
-        _selectedTab = State(initialValue: initialTab)
-    }
+    @State private var permissionState = PermissionState.initial
 
     var body: some View {
         ZStack {
@@ -68,8 +66,17 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(width: 600, height: 500)
+        .frame(
+            minWidth: WhisperWindowLayout.settingsMinimum.width,
+            minHeight: WhisperWindowLayout.settingsMinimum.height
+        )
         .preferredColorScheme(.dark)
+        .onAppear {
+            refreshPermissionState(trigger: .appear)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissionState(trigger: .activation)
+        }
     }
 
     private var header: some View {
@@ -134,6 +141,8 @@ struct SettingsView: View {
                         modifiers: $hotkeyModifiers,
                         isRecording: $isRecordingShortcut
                     )
+                    .accessibilityLabel("Start dictation shortcut")
+                    .accessibilityHint("Records keyboard shortcut used to start dictation")
                     .frame(width: 200, height: 32)
 
                     Button(action: { isRecordingShortcut.toggle() }) {
@@ -159,6 +168,8 @@ struct SettingsView: View {
                         modifiers: $stopHotkeyModifiers,
                         isRecording: $isRecordingStopShortcut
                     )
+                    .accessibilityLabel("Stop dictation shortcut")
+                    .accessibilityHint("Records keyboard shortcut used to stop dictation")
                     .frame(width: 200, height: 32)
 
                     Button(action: { isRecordingStopShortcut.toggle() }) {
@@ -221,21 +232,28 @@ struct SettingsView: View {
             }
 
             Section("Output") {
-                Toggle("Show status indicator", isOn: $showStatusIndicator)
-                Toggle("Menu bar only mode (hide overlay)", isOn: $menuBarOnlyMode)
+                Toggle("Show floating status", isOn: $showStatusIndicator)
+                Toggle("Menu bar only", isOn: $menuBarOnlyMode)
                 Toggle("Use paste instead of typing", isOn: $usePaste)
                 Toggle("Always copy transcription to clipboard", isOn: $alwaysCopyToClipboard)
                 Text("Paste is faster for long text but briefly uses the clipboard.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Text(
-                    "Menu bar only mode keeps hotkeys and dictation active, but hides the floating status overlay."
+                    "Menu bar only keeps hotkeys and dictation active, but hides floating status."
                 )
                 .font(.caption)
                 .foregroundColor(.secondary)
             }
 
             Section("Appearance") {
+                Toggle("Immersive recording", isOn: $immersiveModeEnabled)
+                Text(
+                    "Shows immersive recording and transcribing treatment. It replaces floating status while active."
+                )
+                .font(.caption)
+                .foregroundColor(.secondary)
+
                 Toggle("Customize status location", isOn: $useCustomStatusPosition)
 
                 if useCustomStatusPosition {
@@ -352,20 +370,11 @@ struct SettingsView: View {
         }
     }
 
-    private var stopHotkeyDisplay: String {
-        let combo = KeyCombo(
-            carbonKeyCode: UInt32(stopHotkeyKeyCode),
-            carbonModifiers: UInt32(stopHotkeyModifiers)
-        )
-        let description = combo.description
-        return description.isEmpty ? "Unassigned" : description
-    }
-
     private var waveColorBinding: Binding<Color> {
         Binding(
-            get: { Color(hex: waveColorHex) ?? Color.purple },
+            get: { Color(hex: waveColorHex) ?? DesignSystem.States.active },
             set: { newValue in
-                waveColorHex = newValue.toHexString() ?? "#8B5CF6"
+                waveColorHex = newValue.toHexString() ?? "#FF6A32"
             }
         )
     }
@@ -628,10 +637,11 @@ struct SettingsView: View {
                     title: "Microphone",
                     description: "Required for voice capture",
                     icon: "mic.fill",
-                    isGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                    isGranted: permissionState.snapshot.microphone.isGranted,
                     action: {
-                        Task {
+                        Task { @MainActor in
                             await AVCaptureDevice.requestAccess(for: .audio)
+                            refreshPermissionState(trigger: .microphoneRequestCompletion)
                         }
                     }
                 )
@@ -640,13 +650,13 @@ struct SettingsView: View {
                     title: "Accessibility",
                     description: "Required for typing into apps",
                     icon: "keyboard.fill",
-                    isGranted: TextInjector.isAccessibilityEnabled,
+                    isGranted: permissionState.snapshot.accessibility.isGranted,
                     action: {
-                        TextInjector.requestAccessibility()
+                        requestAccessibilityAndRefresh()
                     }
                 )
 
-                if !TextInjector.isAccessibilityEnabled {
+                if !permissionState.snapshot.accessibility.isGranted {
                     Text(
                         "Tip: If previously granted, try removing the app from System Settings > Privacy > Accessibility, then add it again."
                     )
@@ -658,7 +668,7 @@ struct SettingsView: View {
                 Toggle("Re-request Accessibility permission", isOn: $requestAccessibilityToggle)
                     .onChange(of: requestAccessibilityToggle) {
                         if requestAccessibilityToggle {
-                            TextInjector.requestAccessibility()
+                            requestAccessibilityAndRefresh()
                             requestAccessibilityToggle = false
                         }
                     }
@@ -671,6 +681,39 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+    }
+
+    private var permissionSnapshotQuery: PermissionSnapshotQuery {
+        PermissionSnapshotQuery(
+            microphone: {
+                switch AVCaptureDevice.authorizationStatus(for: .audio) {
+                case .authorized:
+                    return .granted
+                case .notDetermined:
+                    return .unknown
+                case .denied, .restricted:
+                    return .denied
+                @unknown default:
+                    return .denied
+                }
+            },
+            accessibility: {
+                TextInjector.isAccessibilityEnabled ? .granted : .denied
+            }
+        )
+    }
+
+    private func refreshPermissionState(trigger: PermissionRefreshTrigger) {
+        let snapshot = permissionSnapshotQuery.snapshot()
+        permissionState = PermissionStateReducer.reduce(
+            permissionState,
+            event: .refresh(trigger: trigger, snapshot: snapshot)
+        )
+    }
+
+    private func requestAccessibilityAndRefresh() {
+        TextInjector.requestAccessibility()
+        refreshPermissionState(trigger: .accessibilityRequestCompletion)
     }
 
     private func permissionRow(
@@ -725,6 +768,8 @@ struct SettingsView: View {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
+    static let selectionStorageKey = "whisper.settings.selectedTab"
+
     case general
     case model
     case vocabulary

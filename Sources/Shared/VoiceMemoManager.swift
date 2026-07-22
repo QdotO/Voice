@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import OSLog
 #if os(macOS)
@@ -6,7 +6,36 @@ import AppKit
 import UniformTypeIdentifiers
 #endif
 
-public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
+public enum VoiceMemoFileOperationError: Error, Equatable, LocalizedError, Sendable {
+    case removeFailed(URL, String)
+    case copyFailed(source: URL, destination: URL, String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .removeFailed(let url, let reason):
+            return "Could not remove memo audio at \(url.path): \(reason)"
+        case .copyFailed(let source, let destination, let reason):
+            return "Could not export memo audio from \(source.path) to \(destination.path): \(reason)"
+        }
+    }
+}
+
+public enum VoiceMemoDeleteResult: Equatable, Sendable {
+    case deleted
+    case deletedRecordAudioMissing
+    case failed(VoiceMemoFileOperationError)
+}
+
+public enum VoiceMemoExportResult: Equatable, Sendable {
+    case cancelled
+    case exported(URL)
+    case sourceAudioMissing(URL)
+    case failed(VoiceMemoFileOperationError)
+    case unsupported
+}
+
+@MainActor
+public final class VoiceMemoManager: NSObject, ObservableObject {
     @Published public private(set) var memos: [VoiceMemo] = []
     @Published public private(set) var isRecording = false
     @Published public private(set) var currentDuration: TimeInterval = 0
@@ -16,7 +45,6 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
     @Published public private(set) var playbackDuration: TimeInterval = 0
 
     private let store: VoiceMemoStore
-    private let engine: any WhisperEngine
     private let settingsStore: any SettingsStore
     private let promptProvider: @Sendable () async -> String
     private let logger = Logger(subsystem: "Whisper", category: "VoiceMemos")
@@ -26,7 +54,8 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
     private var playbackTimer: Timer?
     private var currentMemoID: UUID?
     private var currentFileURL: URL?
-    private var transcriptionChain: Task<Void, Never>?
+    private let transcriptionQueue: VoiceMemoTranscriptionQueue
+    private var transcriptionSubmissionChain: Task<Void, Never>?
 
     public init(
         engine: any WhisperEngine,
@@ -34,10 +63,10 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         promptProvider: @escaping @Sendable () async -> String,
         store: VoiceMemoStore = .shared
     ) {
-        self.engine = engine
         self.settingsStore = settingsStore
         self.promptProvider = promptProvider
         self.store = store
+        transcriptionQueue = VoiceMemoTranscriptionQueue(engine: engine)
         super.init()
         memos = store.allMemos()
 
@@ -161,15 +190,23 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         playbackTime = clamped
     }
 
-    public func deleteMemo(_ memo: VoiceMemo) {
+    @discardableResult
+    public func deleteMemo(_ memo: VoiceMemo) -> VoiceMemoDeleteResult {
         if currentlyPlayingID == memo.id {
             stopPlayback()
         }
 
         let url = store.memoURL(for: memo)
-        try? FileManager.default.removeItem(at: url)
+        let fileResult = removeAudioFile(at: url)
+        switch fileResult {
+        case .failed:
+            return fileResult
+        case .deleted, .deletedRecordAudioMissing:
+            break
+        }
         store.remove(id: memo.id)
         memos = store.allMemos()
+        return fileResult
     }
 
     public func renameMemo(_ memo: VoiceMemo, title: String) {
@@ -231,7 +268,8 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         }
     }
 
-    public func exportMemo(_ memo: VoiceMemo) {
+    @discardableResult
+    public func exportMemo(_ memo: VoiceMemo) -> VoiceMemoExportResult {
 #if os(macOS)
         let sourceURL = store.memoURL(for: memo)
         let panel = NSSavePanel()
@@ -241,19 +279,38 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         panel.isExtensionHidden = false
 
         if panel.runModal() == .OK, let destination = panel.url {
-            try? FileManager.default.copyItem(at: sourceURL, to: destination)
+            return exportMemo(memo, to: destination)
         }
+        return .cancelled
 #else
         _ = memo
+        return .unsupported
 #endif
+    }
+
+    @discardableResult
+    func exportMemo(_ memo: VoiceMemo, to destination: URL) -> VoiceMemoExportResult {
+        let sourceURL = store.memoURL(for: memo)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            return .sourceAudioMissing(sourceURL)
+        }
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destination)
+            return .exported(destination)
+        } catch {
+            let operationError = VoiceMemoFileOperationError.copyFailed(
+                source: sourceURL,
+                destination: destination,
+                error.localizedDescription
+            )
+            logger.error("Failed to export memo: \(operationError.localizedDescription, privacy: .public)")
+            return .failed(operationError)
+        }
     }
 
     public func audioURL(for memo: VoiceMemo) -> URL {
         store.memoURL(for: memo)
-    }
-
-    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        stopPlayback()
     }
 
     private func stopPlayback() {
@@ -268,22 +325,36 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
 
     private func startTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self, let recorder = self.recorder else { return }
-            self.currentDuration = recorder.currentTime
-            recorder.updateMeters()
-            let power = recorder.averagePower(forChannel: 0)
-            self.recordingLevel = normalizedMeterLevel(power)
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: 0.2,
+            target: self,
+            selector: #selector(updateRecordingMeter),
+            userInfo: nil,
+            repeats: true
+        )
     }
 
     private func startPlaybackTimer() {
         playbackTimer?.invalidate()
-        playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
-            [weak self] _ in
-            guard let self, let player = self.player else { return }
-            self.playbackTime = player.currentTime
-        }
+        playbackTimer = Timer.scheduledTimer(
+            timeInterval: 0.1,
+            target: self,
+            selector: #selector(updatePlaybackTime),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func updateRecordingMeter() {
+        guard let recorder else { return }
+        currentDuration = recorder.currentTime
+        recorder.updateMeters()
+        recordingLevel = normalizedMeterLevel(recorder.averagePower(forChannel: 0))
+    }
+
+    @objc private func updatePlaybackTime() {
+        guard let player else { return }
+        playbackTime = player.currentTime
     }
 
     private func normalizedMeterLevel(_ power: Float) -> Float {
@@ -293,71 +364,64 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
     }
 
     private func enqueueTranscription(memoID: UUID, fileURL: URL) {
-        let previousTask = transcriptionChain
-        transcriptionChain = Task { [weak self] in
-            _ = await previousTask?.value
+        let job = VoiceMemoTranscriptionQueue.Job(
+            memoID: memoID,
+            audioFileURL: fileURL,
+            settings: settingsStore.load(),
+            localeIdentifier: Locale.current.identifier,
+            promptProvider: promptProvider
+        )
+        let previous = transcriptionSubmissionChain
+        transcriptionSubmissionChain = Task { @MainActor [weak self] in
+            _ = await previous?.value
             guard let self else { return }
-            await self.transcribe(memoID: memoID, fileURL: fileURL)
+            let result = await self.transcriptionQueue.enqueue(job)
+            self.applyTranscriptionResult(result, memoID: memoID)
         }
     }
 
-    private func transcribe(memoID: UUID, fileURL: URL) async {
-        let startedAt = ContinuousClock().now
+    private func applyTranscriptionResult(
+        _ result: Result<MemoTranscriptionResult, VoiceMemoTranscriptionQueueError>,
+        memoID: UUID
+    ) {
+        switch result {
+        case .success(let transcription):
+            let transcript = transcription.payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            store.update(id: memoID) { memo in
+                memo.transcript = transcript.isEmpty ? nil : transcript
+                memo.transcriptWords = transcript.isEmpty ? nil : transcription.payload.words
+                if transcription.durationSeconds > 0 {
+                    memo.durationSeconds = transcription.durationSeconds
+                }
+                memo.isTranscribing = false
+            }
+            memos = store.allMemos()
+        case .failure(let error):
+            logger.error("Memo transcription failed: \(error.localizedDescription, privacy: .public)")
+            store.update(id: memoID) { memo in
+                memo.isTranscribing = false
+                memo.transcript = nil
+                memo.transcriptWords = nil
+            }
+            memos = store.allMemos()
+        }
+    }
+
+    private func removeAudioFile(at url: URL) -> VoiceMemoDeleteResult {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .deletedRecordAudioMissing
+        }
 
         do {
-            let settings = settingsStore.load()
-            let preparation = WhisperEnginePreparation(
-                profile: settings.selectedProfile,
-                rawModelOverride: settings.rawModelOverride
-            )
-            try await engine.prepare(preparation)
-
-            let request = MemoTranscriptionRequest(
-                memoID: memoID,
-                audioFileURL: fileURL,
-                profile: settings.selectedProfile,
-                localeIdentifier: Locale.current.identifier,
-                prompt: await promptProvider()
-            )
-            let result = try await engine.transcribeMemo(request)
-            let transcript = result.payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let elapsed = startedAt.duration(to: ContinuousClock().now)
-            let elapsedSeconds = max(0.001, Self.seconds(from: elapsed))
-            let throughput = max(0, result.durationSeconds / elapsedSeconds)
-
-            await WhisperTelemetry.shared.record(
-                BenchmarkMeasurement(
-                    metric: .memoThroughput,
-                    value: throughput,
-                    unit: .realtimeMultiplier,
-                    context: [
-                        "memo_id": memoID.uuidString,
-                        "characters": "\(transcript.count)",
-                    ]
-                )
-            )
-
-            await MainActor.run {
-                self.store.update(id: memoID) { memo in
-                    memo.transcript = transcript.isEmpty ? nil : transcript
-                    memo.transcriptWords = transcript.isEmpty ? nil : result.payload.words
-                    if result.durationSeconds > 0 {
-                        memo.durationSeconds = result.durationSeconds
-                    }
-                    memo.isTranscribing = false
-                }
-                self.memos = self.store.allMemos()
-            }
+            try FileManager.default.removeItem(at: url)
+            return .deleted
         } catch {
-            logger.error("Memo transcription failed: \(error.localizedDescription, privacy: .public)")
-            await MainActor.run {
-                self.store.update(id: memoID) { memo in
-                    memo.isTranscribing = false
-                    memo.transcript = nil
-                    memo.transcriptWords = nil
-                }
-                self.memos = self.store.allMemos()
-            }
+            let operationError = VoiceMemoFileOperationError.removeFailed(
+                url,
+                error.localizedDescription
+            )
+            logger.error("Failed to delete memo audio: \(operationError.localizedDescription, privacy: .public)")
+            return .failed(operationError)
         }
     }
 
@@ -365,8 +429,13 @@ public final class VoiceMemoManager: NSObject, ObservableObject, AVAudioPlayerDe
         memos = store.allMemos()
     }
 
-    private static func seconds(from duration: Duration) -> Double {
-        let components = duration.components
-        return Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000)
+}
+
+@MainActor
+extension VoiceMemoManager: AVAudioPlayerDelegate {
+    nonisolated public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.stopPlayback()
+        }
     }
 }

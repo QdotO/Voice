@@ -21,24 +21,27 @@ struct MainView: View {
 
     var body: some View {
         ZStack {
-            DesignSystem.backgroundGradient
+            DesignSystem.Surface.canvas
                 .ignoresSafeArea()
 
-            VStack(spacing: 20) {
-                header
+            ScrollView(.vertical) {
+                VStack(spacing: DesignSystem.Spacing.xl) {
+                    header
 
-                LazyVGrid(columns: gridColumns, spacing: 16) {
-                    dictationTile
-                    voiceMemoTile
-                    historyTile
-                    accuracyTile
+                    LazyVGrid(columns: gridColumns, spacing: DesignSystem.Spacing.lg) {
+                        dictationTile
+                        voiceMemoTile
+                        historyTile
+                        accuracyTile
+                    }
                 }
-
-                Spacer()
+                .padding(DesignSystem.Spacing.xl)
             }
-            .padding(24)
         }
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(
+            minWidth: WhisperWindowLayout.mainMinimum.width,
+            minHeight: WhisperWindowLayout.mainMinimum.height
+        )
         .onAppear {
             refreshHistory()
         }
@@ -50,46 +53,69 @@ struct MainView: View {
     }
 
     private var gridColumns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 16),
-            GridItem(.flexible(), spacing: 16),
-        ]
+        [GridItem(.adaptive(minimum: 300), spacing: DesignSystem.Spacing.lg)]
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Whisper")
-                    .font(.system(size: 26, weight: .semibold))
-                Text("Offline dictation and voice memos")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                headerTitle
+                Spacer()
+                headerActions
             }
 
-            Spacer()
-
-            HStack(spacing: 12) {
-                Button("Settings") { openSettings() }
-                    .buttonStyle(.bordered)
-                Button("History") { openHistory() }
-                    .buttonStyle(.bordered)
-                Button("Voice Memos") { openVoiceMemos() }
-                    .buttonStyle(.bordered)
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                headerTitle
+                headerActions
             }
         }
     }
 
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Whisper")
+                .font(.system(size: 26, weight: .semibold))
+            Text("Offline dictation and voice memos")
+                .font(.caption)
+                .foregroundStyle(DesignSystem.Text.secondary)
+        }
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 12) {
+            Button("Settings") { openSettings() }
+                .buttonStyle(.bordered)
+            Button("History") { openHistory() }
+                .buttonStyle(.bordered)
+            Button("Voice Memos") { openVoiceMemos() }
+                .buttonStyle(.bordered)
+        }
+    }
+
     private var dictationTile: some View {
-        BentoTile(title: "Dictation", subtitle: statusViewModel.state.label) {
+        BentoTile(title: "Dictation", subtitle: statusViewModel.state.presentation.title) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     Button(action: toggleDictation) {
                         Text(statusViewModel.state.isRecording ? "Stop" : "Start")
                             .frame(minWidth: 90)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(
+                        .whisperPrimary(
+                            isBusy: !statusViewModel.state.isReady && !statusViewModel.state.isRecording
+                        )
+                    )
+                    .accessibilityLabel(
+                        statusViewModel.state.isRecording ? "Stop dictation" : "Start dictation"
+                    )
+                    .accessibilityValue(statusViewModel.state.presentation.title)
+                    .accessibilityHint(
+                        statusViewModel.state.isRecording
+                            ? "Stops dictation and inserts transcript"
+                            : "Starts dictation"
+                    )
 
-                    Toggle("Overlay", isOn: $showStatusIndicator)
+                    Toggle("Floating status", isOn: $showStatusIndicator)
                         .toggleStyle(.switch)
                 }
 
@@ -100,13 +126,13 @@ struct MainView: View {
                 .pickerStyle(.segmented)
 
                 if statusViewModel.state.isReady {
-                    Text("Ready to insert at the cursor.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text(statusViewModel.state.label)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        Text("Ready to insert at the cursor.")
+                            .font(.caption)
+                            .foregroundStyle(DesignSystem.Text.secondary)
+                    } else {
+                        Text(statusViewModel.state.presentation.title)
+                            .font(.caption)
+                            .foregroundStyle(DesignSystem.Text.secondary)
                 }
             }
         }
@@ -120,36 +146,40 @@ struct MainView: View {
                     CompactWaveform(level: voiceMemoManager.recordingLevel)
                         .frame(width: 140, height: 28)
                         .opacity(voiceMemoManager.isRecording ? 1 : 0.35)
+                        .accessibilityHidden(true)
 
                     Button(action: toggleMemoRecording) {
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    voiceMemoManager.isRecording
-                                        ? Color.red : Color.white.opacity(0.15)
-                                )
-                                .frame(width: 42, height: 42)
-                            Circle()
-                                .stroke(Color.white.opacity(0.2), lineWidth: 2)
-                                .frame(width: 50, height: 50)
-                            if voiceMemoManager.isRecording {
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 12, height: 12)
-                            }
-                        }
+                        Label(
+                            voiceMemoManager.isRecording ? "Stop Recording" : "Record",
+                            systemImage: voiceMemoManager.isRecording ? "stop.fill" : "record.circle"
+                        )
+                        .frame(minHeight: DesignSystem.ControlHeight.primary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.whisperPrimary())
+                    .accessibilityLabel(
+                        voiceMemoManager.isRecording
+                            ? "Stop recording voice memo"
+                            : "Record voice memo"
+                    )
+                    .accessibilityValue(
+                        "Duration \(TimeFormatter.formatDuration(voiceMemoManager.currentDuration))"
+                    )
+                    .accessibilityHint(
+                        voiceMemoManager.isRecording
+                            ? "Stops and saves current voice memo"
+                            : "Starts a new voice memo recording"
+                    )
+                    .help(voiceMemoManager.isRecording ? "Stop recording" : "Record voice memo")
 
-                    Text(TimeFormatter.formatDuration(voiceMemoManager.currentDuration))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        Text(TimeFormatter.formatDuration(voiceMemoManager.currentDuration))
+                            .font(.caption)
+                            .foregroundStyle(DesignSystem.Text.secondary)
                 }
 
                 if voiceMemoManager.memos.isEmpty {
                     Text("No memos yet. Tap record to start a long session.")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(DesignSystem.Text.secondary)
                 } else {
                     VStack(spacing: 6) {
                         ForEach(voiceMemoManager.memos.prefix(3)) { memo in
@@ -172,7 +202,7 @@ struct MainView: View {
                 if recentDictations.isEmpty {
                     Text("No dictations yet.")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(DesignSystem.Text.secondary)
                 } else {
                     ForEach(recentDictations.prefix(5)) { entry in
                         HStack {
@@ -182,14 +212,14 @@ struct MainView: View {
                             Spacer()
                             Text(timeString(entry.timestamp))
                                 .font(.caption2)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(DesignSystem.Text.secondary)
                         }
                     }
                 }
 
                 Text("Corrections are learned automatically from accepted edits and reused in future prompts.")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(DesignSystem.Text.secondary)
 
                 Button("Open History") {
                     openHistory()
@@ -205,7 +235,7 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(currentModelSelection.profile.detailText)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(DesignSystem.Text.secondary)
 
                 HStack(spacing: 12) {
                     AccuracyMetric(
@@ -227,7 +257,7 @@ struct MainView: View {
                     "Vocabulary stays editable in v2. Use the profile picker for normal operation and raw overrides only for debug cases."
                 )
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundStyle(DesignSystem.Text.secondary)
 
                 HStack {
                     Button("Model Settings") {
@@ -308,9 +338,9 @@ private struct BentoTile<Content: View>: View {
 
             content
         }
-        .padding(16)
+        .padding(DesignSystem.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard(cornerRadius: 18)
+        .whisperCard(level: .surface)
     }
 }
 
@@ -322,15 +352,15 @@ private struct AccuracyMetric: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundStyle(DesignSystem.Text.secondary)
             Text(value)
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
         }
-        .padding(10)
+        .padding(DesignSystem.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.08))
-        .cornerRadius(12)
+        .background(DesignSystem.Surface.inset)
+        .cornerRadius(DesignSystem.Radius.row)
     }
 }
 
@@ -344,18 +374,22 @@ private struct VoiceMemoMiniRow: View {
             Button(action: onPlay) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 10))
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.1))
+                    .frame(width: 44, height: 44)
+                    .background(DesignSystem.Surface.raised)
                     .clipShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.whisperIconButton())
+            .accessibilityLabel(isPlaying ? "Pause memo" : "Play memo")
+            .accessibilityValue("Duration \(TimeFormatter.formatDuration(memo.durationSeconds))")
+            .accessibilityHint("Plays audio")
+            .help(isPlaying ? "Pause memo" : "Play memo")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(memo.title)
                     .font(.system(size: 12, weight: .medium))
                 Text(TimeFormatter.formatDuration(memo.durationSeconds))
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(DesignSystem.Text.secondary)
             }
 
             Spacer()
@@ -374,62 +408,90 @@ private struct CompactWaveform: View {
     private let barCount = 14
     private let particlesPerBar = 14
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @ViewBuilder
     var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                let normalized = CGFloat(min(max(level, 0.02), 1))
-                let spacing: CGFloat = 2
-                let barWidth = max((size.width / CGFloat(barCount)) - spacing, 2)
-                let centerY = size.height / 2
-                let burst = max(0, (normalized - 0.6) / 0.4)
-                let time = timeline.date.timeIntervalSinceReferenceDate
+        if reduceMotion {
+            staticWaveform
+        } else {
+            TimelineView(.animation) { timeline in
+                Canvas { context, size in
+                    let normalized = CGFloat(min(max(level, 0.02), 1))
+                    let spacing: CGFloat = 2
+                    let barWidth = max((size.width / CGFloat(barCount)) - spacing, 2)
+                    let centerY = size.height / 2
+                    let burst = max(0, (normalized - 0.6) / 0.4)
+                    let time = timeline.date.timeIntervalSinceReferenceDate
 
-                for index in 0..<barCount {
-                    let phase = CGFloat(index) / CGFloat(barCount)
-                    let mod = 0.35 + 0.65 * sin((phase * .pi * 2) + (normalized * 2))
-                    let barHeight = max(4, size.height * normalized * mod)
-                    let originX = CGFloat(index) * (barWidth + spacing) + (barWidth / 2)
+                    for index in 0..<barCount {
+                        let phase = CGFloat(index) / CGFloat(barCount)
+                        let mod = 0.35 + 0.65 * sin((phase * .pi * 2) + (normalized * 2))
+                        let barHeight = max(4, size.height * normalized * mod)
+                        let originX = CGFloat(index) * (barWidth + spacing) + (barWidth / 2)
 
-                    for particle in 0..<particlesPerBar {
-                        let seed = (index + 1) * 1000 + particle * 17
-                        let randX = pseudoRandom(seed)
-                        let randY = pseudoRandom(seed + 1)
-                        let randSize = pseudoRandom(seed + 2)
-                        let randPhase = pseudoRandom(seed + 3)
+                        for particle in 0..<particlesPerBar {
+                            let seed = (index + 1) * 1000 + particle * 17
+                            let randX = pseudoRandom(seed)
+                            let randY = pseudoRandom(seed + 1)
+                            let randSize = pseudoRandom(seed + 2)
+                            let randPhase = pseudoRandom(seed + 3)
 
-                        let drift = sin(time * (1.2 + Double(randPhase) * 1.5) + Double(seed))
-                        let lift = cos(time * (1.4 + Double(randPhase)) + Double(seed))
-                        let jitterX = CGFloat(drift) * (1.2 + 4 * burst)
-                        let jitterY = CGFloat(lift) * (1.0 + 6 * burst)
+                            let drift = sin(time * (1.2 + Double(randPhase) * 1.5) + Double(seed))
+                            let lift = cos(time * (1.4 + Double(randPhase)) + Double(seed))
+                            let jitterX = CGFloat(drift) * (1.2 + 4 * burst)
+                            let jitterY = CGFloat(lift) * (1.0 + 6 * burst)
 
-                        let x = originX + (randX - 0.5) * barWidth + jitterX
-                        let y = centerY + (randY - 0.5) * barHeight + jitterY
+                            let x = originX + (randX - 0.5) * barWidth + jitterX
+                            let y = centerY + (randY - 0.5) * barHeight + jitterY
 
-                        let radius = 1.0 + randSize * (1.4 + (1.6 * normalized))
-                        let color = particleColor(t: randY)
-                            .opacity(0.25 + (0.55 * normalized))
+                            let radius = 1.0 + randSize * (1.4 + (1.6 * normalized))
+                            let color = particleColor(t: randY)
+                                .opacity(0.25 + (0.55 * normalized))
 
-                        let rect = CGRect(
-                            x: x - radius,
-                            y: y - radius,
-                            width: radius * 2,
-                            height: radius * 2
-                        )
-                        context.fill(Path(ellipseIn: rect), with: .color(color))
+                            let rect = CGRect(
+                                x: x - radius,
+                                y: y - radius,
+                                width: radius * 2,
+                                height: radius * 2
+                            )
+                            context.fill(Path(ellipseIn: rect), with: .color(color))
+                        }
                     }
                 }
             }
         }
     }
 
+    private var staticWaveform: some View {
+        Canvas { context, size in
+            let normalized = CGFloat(min(max(level, 0.02), 1))
+            let spacing: CGFloat = 2
+            let barWidth = max((size.width / CGFloat(barCount)) - spacing, 2)
+            let centerY = size.height / 2
+
+            for index in 0..<barCount {
+                let phase = CGFloat(index) / CGFloat(barCount)
+                let mod = 0.35 + 0.65 * sin((phase * .pi * 2) + (normalized * 2))
+                let barHeight = max(4, size.height * normalized * mod)
+                let originX = CGFloat(index) * (barWidth + spacing)
+                let rect = CGRect(
+                    x: originX,
+                    y: centerY - barHeight / 2,
+                    width: barWidth,
+                    height: barHeight
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: barWidth / 2),
+                    with: .color(DesignSystem.States.active.opacity(0.85))
+                )
+            }
+        }
+    }
+
     private func particleColor(t: CGFloat) -> Color {
         let clamped = min(max(t, 0), 1)
-        let start = (r: 0.62, g: 0.46, b: 1.0)
-        let end = (r: 0.3, g: 0.6, b: 1.0)
-        let r = start.r + (end.r - start.r) * clamped
-        let g = start.g + (end.g - start.g) * clamped
-        let b = start.b + (end.b - start.b) * clamped
-        return Color(red: r, green: g, blue: b)
+        return clamped < 0.5 ? DesignSystem.States.active : DesignSystem.States.activeBright
     }
 
     private func pseudoRandom(_ seed: Int) -> CGFloat {

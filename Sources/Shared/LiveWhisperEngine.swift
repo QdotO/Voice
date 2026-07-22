@@ -1,7 +1,15 @@
 import AVFoundation
 import Foundation
 import OSLog
-import WhisperKit
+
+// WhisperKit 0.9 exposes its model and pipeline protocols without Sendable
+// annotations. This engine owns one model instance and keeps its lifecycle in
+// this actor. Live inference owns pipeline access until stream completion;
+// memo/final-tail inference waits for that completion and then uses one
+// serialized queue. No WhisperKit reference is used concurrently. Preconcurrency
+// import limits this boundary to third-party declarations; it does not claim
+// WhisperKit is globally Sendable.
+@preconcurrency import WhisperKit
 
 public enum WhisperEngineRuntimeError: LocalizedError, Sendable {
     case dictationAlreadyRunning
@@ -26,6 +34,366 @@ public enum WhisperEngineRuntimeError: LocalizedError, Sendable {
     }
 }
 
+/// Internal seams keep model lifecycle tests deterministic without exposing
+/// WhisperKit details through the public engine API.
+protocol LiveWhisperModelLoader: Sendable {
+    func loadModel(for request: WhisperEnginePreparation) async throws -> WhisperKit
+}
+
+protocol LiveWhisperInference: Sendable {
+    func transcribe(
+        model: WhisperKit,
+        audioPath: String,
+        decodeOptions: DecodingOptions
+    ) async throws -> [TranscriptionResult]
+
+    func transcribe(
+        model: WhisperKit,
+        audioSamples: [Float],
+        decodeOptions: DecodingOptions
+    ) async throws -> [TranscriptionResult]
+}
+
+/// Test seam for final-tail policy. Production finalization uses the same
+/// resolution path with real inference results and errors.
+enum FinalTailTestDecodeOutcome: Sendable {
+    case success
+    case noResult
+    case failure
+    case canceled
+}
+
+struct FinalTailTestResolution: Equatable, Sendable {
+    let transcript: String
+    let words: [TranscriptWord]
+    let usedLiveSnapshotFallback: Bool
+}
+
+private final class PreparationWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<WhisperKit, Error>?
+    private var didFinish = false
+    private var didCancel = false
+
+    func install(_ continuation: CheckedContinuation<WhisperKit, Error>) {
+        let shouldCancel: Bool
+        lock.lock()
+        shouldCancel = didCancel || didFinish
+        if !shouldCancel {
+            self.continuation = continuation
+        }
+        lock.unlock()
+
+        if shouldCancel {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func cancel() {
+        let continuation: CheckedContinuation<WhisperKit, Error>?
+        lock.lock()
+        didCancel = true
+        continuation = self.continuation
+        self.continuation = nil
+        didFinish = true
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func complete(_ result: Result<WhisperKit, Error>) {
+        let continuation: CheckedContinuation<WhisperKit, Error>?
+        lock.lock()
+        guard !didFinish else {
+            lock.unlock()
+            return
+        }
+        didFinish = true
+        continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+
+        switch result {
+        case let .success(model):
+            continuation?.resume(returning: model)
+        case let .failure(error):
+            continuation?.resume(throwing: error)
+        }
+    }
+}
+
+private final class PreparationObservation: @unchecked Sendable {
+    private let task: Task<WhisperKit, Error>
+    private let waiter: PreparationWaiter
+
+    init(task: Task<WhisperKit, Error>, waiter: PreparationWaiter) {
+        self.task = task
+        self.waiter = waiter
+    }
+
+    func start() {
+        Task { @Sendable [task, waiter] in
+            do {
+                waiter.complete(.success(try await task.value))
+            } catch {
+                waiter.complete(.failure(error))
+            }
+        }
+    }
+}
+
+private final class LiveCompletionWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var didFinish = false
+    private var didCancel = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        let shouldResume: Bool
+        lock.lock()
+        shouldResume = didCancel || didFinish
+        if !shouldResume {
+            self.continuation = continuation
+        }
+        lock.unlock()
+
+        if shouldResume {
+            continuation.resume()
+        }
+    }
+
+    func cancel() {
+        let continuation: CheckedContinuation<Void, Never>?
+        lock.lock()
+        didCancel = true
+        continuation = self.continuation
+        self.continuation = nil
+        didFinish = true
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+private final class LiveCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didComplete = false
+    private var waiters: [LiveCompletionWaiter] = []
+
+    func wait() async {
+        let waiter = LiveCompletionWaiter()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                let completed = didComplete
+                if !completed {
+                    waiters.append(waiter)
+                }
+                lock.unlock()
+                if completed {
+                    waiter.cancel()
+                }
+                waiter.install(continuation)
+            }
+        } onCancel: {
+            waiter.cancel()
+        }
+    }
+
+    func complete() {
+        let pending: [LiveCompletionWaiter]
+        lock.lock()
+        guard !didComplete else {
+            lock.unlock()
+            return
+        }
+        didComplete = true
+        pending = waiters
+        waiters.removeAll()
+        lock.unlock()
+        pending.forEach { $0.cancel() }
+    }
+}
+
+private actor LiveWhisperInferenceQueue {
+    private final class Job: @unchecked Sendable {
+        let id: UUID
+        let operation: @Sendable () async throws -> [TranscriptionResult]
+        let waiter: InferenceWaiter
+
+        init(
+            id: UUID,
+            operation: @escaping @Sendable () async throws -> [TranscriptionResult],
+            waiter: InferenceWaiter
+        ) {
+            self.id = id
+            self.operation = operation
+            self.waiter = waiter
+        }
+    }
+
+    private var pending: [Job] = []
+    private var runningJobID: UUID?
+
+    func run(
+        _ operation: @escaping @Sendable () async throws -> [TranscriptionResult]
+    ) async throws -> [TranscriptionResult] {
+        let id = UUID()
+        let waiter = InferenceWaiter()
+        let job = Job(id: id, operation: operation, waiter: waiter)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.install(continuation)
+                self.enqueue(job)
+            }
+        } onCancel: {
+            waiter.cancel()
+            Task { await self.cancel(jobID: id) }
+        }
+    }
+
+    private func enqueue(_ job: Job) {
+        guard !job.waiter.isCancelled else { return }
+        pending.append(job)
+        startNextIfNeeded()
+    }
+
+    private func cancel(jobID: UUID) {
+        if let index = pending.firstIndex(where: { $0.id == jobID }) {
+            let job = pending.remove(at: index)
+            job.waiter.cancel()
+            startNextIfNeeded()
+        } else if runningJobID == jobID {
+            // Do not cancel active WhisperKit work. It must finish before queue
+            // advances, so one canceled caller cannot break queue progress.
+            pending.first(where: { $0.id == jobID })?.waiter.cancel()
+        }
+    }
+
+    private func startNextIfNeeded() {
+        guard runningJobID == nil else { return }
+        guard !pending.isEmpty else { return }
+
+        let job = pending.removeFirst()
+        guard !job.waiter.isCancelled else {
+            startNextIfNeeded()
+            return
+        }
+
+        runningJobID = job.id
+        Task { [weak self] in
+            do {
+                let results = try await job.operation()
+                await self?.finish(jobID: job.id, waiter: job.waiter, result: .success(results))
+            } catch {
+                await self?.finish(jobID: job.id, waiter: job.waiter, result: .failure(error))
+            }
+        }
+    }
+
+    private func finish(
+        jobID: UUID,
+        waiter: InferenceWaiter,
+        result: Result<[TranscriptionResult], Error>
+    ) {
+        guard runningJobID == jobID else { return }
+        runningJobID = nil
+        waiter.complete(result)
+        startNextIfNeeded()
+    }
+}
+
+private final class InferenceWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<[TranscriptionResult], Error>?
+    private var didFinish = false
+    private var didCancel = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didCancel
+    }
+
+    func install(_ continuation: CheckedContinuation<[TranscriptionResult], Error>) {
+        let shouldCancel: Bool
+        lock.lock()
+        shouldCancel = didCancel || didFinish
+        if !shouldCancel {
+            self.continuation = continuation
+        }
+        lock.unlock()
+
+        if shouldCancel {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func cancel() {
+        let continuation: CheckedContinuation<[TranscriptionResult], Error>?
+        lock.lock()
+        didCancel = true
+        continuation = self.continuation
+        self.continuation = nil
+        didFinish = true
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func complete(_ result: Result<[TranscriptionResult], Error>) {
+        let continuation: CheckedContinuation<[TranscriptionResult], Error>?
+        lock.lock()
+        guard !didFinish else {
+            lock.unlock()
+            return
+        }
+        didFinish = true
+        continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+
+        switch result {
+        case let .success(results):
+            continuation?.resume(returning: results)
+        case let .failure(error):
+            continuation?.resume(throwing: error)
+        }
+    }
+}
+
+private struct DefaultLiveWhisperModelLoader: LiveWhisperModelLoader {
+    func loadModel(for request: WhisperEnginePreparation) async throws -> WhisperKit {
+        let resolvedModelName = request.resolvedModelName
+        let config = WhisperKitConfig(
+            model: resolvedModelName,
+            voiceActivityDetector: EnergyVAD(),
+            verbose: false,
+            logLevel: .none,
+            prewarm: true,
+            load: true,
+            download: true
+        )
+        return try await WhisperKit(config)
+    }
+}
+
+private struct DefaultLiveWhisperInference: LiveWhisperInference {
+    func transcribe(
+        model: WhisperKit,
+        audioPath: String,
+        decodeOptions: DecodingOptions
+    ) async throws -> [TranscriptionResult] {
+        try await model.transcribe(audioPath: audioPath, decodeOptions: decodeOptions)
+    }
+
+    func transcribe(
+        model: WhisperKit,
+        audioSamples: [Float],
+        decodeOptions: DecodingOptions
+    ) async throws -> [TranscriptionResult] {
+        try await model.transcribe(audioArray: audioSamples, decodeOptions: decodeOptions)
+    }
+}
+
 public actor LiveWhisperEngine: WhisperEngine {
     private struct StreamSnapshot: Equatable, Sendable {
         var transcript: String = ""
@@ -38,6 +406,7 @@ public actor LiveWhisperEngine: WhisperEngine {
     private struct ActiveStreamSession {
         let sessionID: UUID
         let continuation: DictationUpdateStream.Continuation
+        let completion = LiveCompletion()
         var transcriber: AppAudioStreamTranscriber?
         var task: Task<Void, Never>?
         var finalDecodeOptions: DecodingOptions?
@@ -47,11 +416,36 @@ public actor LiveWhisperEngine: WhisperEngine {
         var lastPartialTranscript = ""
     }
 
+    private enum FinalTailTestError: Error {
+        case failed
+    }
+
+    private final class PreparationFlight: @unchecked Sendable {
+        let request: WhisperEnginePreparation
+        let generation: UInt64
+        let task: Task<WhisperKit, Error>
+
+        init(
+            request: WhisperEnginePreparation,
+            generation: UInt64,
+            task: Task<WhisperKit, Error>
+        ) {
+            self.request = request
+            self.generation = generation
+            self.task = task
+        }
+    }
+
     private let logger = Logger(subsystem: "Whisper", category: "V2Engine")
     private let audioLevelHandler: (@Sendable (Float) -> Void)?
+    private let modelLoader: any LiveWhisperModelLoader
+    private let inference: any LiveWhisperInference
 
     private var whisperKit: WhisperKit?
     private var preparedRequest: WhisperEnginePreparation?
+    private var preparationGeneration: UInt64 = 0
+    private var preparationFlight: PreparationFlight?
+    private let inferenceQueue = LiveWhisperInferenceQueue()
     private var activeStream: ActiveStreamSession?
     private var stoppingTasks: [UUID: Task<Void, Never>] = [:]
     private let permissionRequester: @Sendable () async -> Bool
@@ -60,8 +454,24 @@ public actor LiveWhisperEngine: WhisperEngine {
         audioLevelHandler: (@Sendable (Float) -> Void)? = nil,
         permissionRequester: @escaping @Sendable () async -> Bool = { await AudioProcessor.requestRecordPermission() }
     ) {
+        self.init(
+            audioLevelHandler: audioLevelHandler,
+            permissionRequester: permissionRequester,
+            modelLoader: DefaultLiveWhisperModelLoader(),
+            inference: DefaultLiveWhisperInference()
+        )
+    }
+
+    init(
+        audioLevelHandler: (@Sendable (Float) -> Void)? = nil,
+        permissionRequester: @escaping @Sendable () async -> Bool = { await AudioProcessor.requestRecordPermission() },
+        modelLoader: any LiveWhisperModelLoader,
+        inference: any LiveWhisperInference
+    ) {
         self.audioLevelHandler = audioLevelHandler
         self.permissionRequester = permissionRequester
+        self.modelLoader = modelLoader
+        self.inference = inference
     }
 
     public func prepareMicrophoneAccess() async throws {
@@ -79,27 +489,53 @@ public actor LiveWhisperEngine: WhisperEngine {
             await stopDictation(sessionID: activeStream?.sessionID ?? UUID())
         }
 
-        try await loadWhisperKit(for: request)
+        try Task.checkCancellation()
+
+        let flight: PreparationFlight
+        if let currentFlight = preparationFlight, currentFlight.request == request {
+            flight = currentFlight
+        } else {
+            preparationGeneration &+= 1
+            let generation = preparationGeneration
+            let modelLoader = self.modelLoader
+            let task = Task {
+                try await modelLoader.loadModel(for: request)
+            }
+            flight = PreparationFlight(request: request, generation: generation, task: task)
+            preparationFlight = flight
+        }
+
+        do {
+            let model = try await waitForPreparation(flight.task)
+            guard flight.generation == preparationGeneration else {
+                return
+            }
+            whisperKit = model
+            preparedRequest = request
+            if preparationFlight === flight {
+                preparationFlight = nil
+            }
+        } catch {
+            // Canceled callers detach from shared work. Leave flight intact so
+            // another caller can join it and so stale completion stays harmless.
+            if !Task.isCancelled, preparationFlight === flight {
+                preparationFlight = nil
+            }
+            throw error
+        }
     }
 
-    private func loadWhisperKit(for request: WhisperEnginePreparation) async throws {
-        let resolvedModelName = request.resolvedModelName
-
-        logger.info("Preparing WhisperKit with model \(resolvedModelName, privacy: .public)")
-
-        let config = WhisperKitConfig(
-            model: resolvedModelName,
-            voiceActivityDetector: EnergyVAD(),
-            verbose: false,
-            logLevel: .none,
-            prewarm: true,
-            load: true,
-            download: true
-        )
-
-        let whisperKit = try await WhisperKit(config)
-        self.whisperKit = whisperKit
-        self.preparedRequest = request
+    private func waitForPreparation(_ task: Task<WhisperKit, Error>) async throws -> WhisperKit {
+        let waiter = PreparationWaiter()
+        let observation = PreparationObservation(task: task, waiter: waiter)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.install(continuation)
+                observation.start()
+            }
+        } onCancel: {
+            waiter.cancel()
+        }
     }
 
     public func startDictation(_ request: DictationSessionRequest) async throws -> DictationUpdateStream {
@@ -286,37 +722,33 @@ public actor LiveWhisperEngine: WhisperEngine {
         // Live decoding requires more than one second of new audio. Stopping
         // can leave a sub-second tail untouched, so decode only residual tail
         // plus bounded context with end clipping disabled.
-        var flushedSnapshot: StreamSnapshot?
+        let tailResult: Result<StreamSnapshot?, Error>
         if didBeginCapture {
             do {
-                flushedSnapshot = try await flushFinalAudio(
+                tailResult = .success(try await flushFinalAudio(
                     using: activeStream.finalDecodeOptions,
                     lastDecodedSamples: activeStream.lastSnapshot.lastBufferSize
-                )
+                ))
             } catch {
-                finishStoppedStreamWithError(sessionID: sessionID, error: error)
-                return
+                tailResult = .failure(error)
             }
         } else {
             logger.info("Final stream flush skipped: capture never began")
+            tailResult = .success(nil)
         }
 
         guard var finalStream = self.activeStream, finalStream.sessionID == sessionID else { return }
-        if let flushedSnapshot {
-            let merged = FinalTailTranscriptMerger.merge(
-                currentText: finalStream.lastSnapshot.transcript,
-                currentWords: finalStream.lastSnapshot.words,
-                tailText: flushedSnapshot.transcript,
-                tailWords: flushedSnapshot.words,
-                decodedThroughSeconds: Double(finalStream.lastSnapshot.lastBufferSize) / Double(WhisperKit.sampleRate)
+        do {
+            let resolution = try resolveFinalTail(
+                sessionID: sessionID,
+                currentSnapshot: finalStream.lastSnapshot,
+                tailResult: tailResult
             )
-            finalStream.lastSnapshot.transcript = merged.text
-            finalStream.lastSnapshot.words = merged.words
-            finalStream.lastSnapshot.lastBufferSize = max(
-                finalStream.lastSnapshot.lastBufferSize,
-                flushedSnapshot.lastBufferSize
-            )
+            finalStream.lastSnapshot = resolution.snapshot
             self.activeStream = finalStream
+        } catch {
+            finishStoppedStreamWithError(sessionID: sessionID, error: error)
+            return
         }
 
         guard let finalStream = self.activeStream, finalStream.sessionID == sessionID else { return }
@@ -350,6 +782,7 @@ public actor LiveWhisperEngine: WhisperEngine {
                 words: finalWords
             ))
         finalStream.continuation.finish()
+        finalStream.completion.complete()
 
         self.activeStream = nil
     }
@@ -362,6 +795,20 @@ public actor LiveWhisperEngine: WhisperEngine {
         guard let decodeOptions else { return nil }
 
         let audioSamples = Array(whisperKit.audioProcessor.audioSamples)
+        return try await flushFinalAudio(
+            using: decodeOptions,
+            lastDecodedSamples: lastDecodedSamples,
+            audioSamples: audioSamples
+        )
+    }
+
+    private func flushFinalAudio(
+        using decodeOptions: DecodingOptions,
+        lastDecodedSamples: Int,
+        audioSamples: [Float]
+    ) async throws -> StreamSnapshot? {
+        guard let whisperKit else { return nil }
+
         guard let window = BoundedFinalAudioWindow.make(
             totalSamples: audioSamples.count,
             lastDecodedSamples: lastDecodedSamples,
@@ -378,14 +825,20 @@ public actor LiveWhisperEngine: WhisperEngine {
             "Final stream flush starting samples=\(windowSamples.count, privacy: .public) offset=\(offsetSeconds, privacy: .public)s"
         )
 
-        var finalOptions = decodeOptions
-        finalOptions.clipTimestamps = []
-        finalOptions.windowClipTime = 0
+        let finalOptions: DecodingOptions = {
+            var options = decodeOptions
+            options.clipTimestamps = []
+            options.windowClipTime = 0
+            return options
+        }()
 
-        let results = try await whisperKit.transcribe(
-            audioArray: windowSamples,
-            decodeOptions: finalOptions
-        )
+        let results = try await inferenceQueue.run { [inference, whisperKit] in
+            try await inference.transcribe(
+                model: whisperKit,
+                audioSamples: windowSamples,
+                decodeOptions: finalOptions
+            )
+        }
         guard !results.isEmpty else { return nil }
 
         let merged = TranscriptionUtilities.mergeTranscriptionResults(results.map(Optional.some))
@@ -397,6 +850,45 @@ public actor LiveWhisperEngine: WhisperEngine {
             words: Self.mapWords(from: merged.allWords, offsetSeconds: offsetSeconds),
             lastBufferSize: audioSamples.count
         )
+    }
+
+    private func resolveFinalTail(
+        sessionID: UUID,
+        currentSnapshot: StreamSnapshot,
+        tailResult: Result<StreamSnapshot?, Error>
+    ) throws -> (snapshot: StreamSnapshot, usedLiveSnapshotFallback: Bool) {
+        switch tailResult {
+        case let .success(flushedSnapshot):
+            guard let flushedSnapshot else {
+                return (currentSnapshot, false)
+            }
+
+            let merged = FinalTailTranscriptMerger.merge(
+                currentText: currentSnapshot.transcript,
+                currentWords: currentSnapshot.words,
+                tailText: flushedSnapshot.transcript,
+                tailWords: flushedSnapshot.words,
+                decodedThroughSeconds: Double(currentSnapshot.lastBufferSize) / Double(WhisperKit.sampleRate)
+            )
+            var resolvedSnapshot = currentSnapshot
+            resolvedSnapshot.transcript = merged.text
+            resolvedSnapshot.words = merged.words
+            resolvedSnapshot.lastBufferSize = max(
+                currentSnapshot.lastBufferSize,
+                flushedSnapshot.lastBufferSize
+            )
+            return (resolvedSnapshot, false)
+
+        case let .failure(error):
+            guard !currentSnapshot.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw error
+            }
+
+            logger.error(
+                "Final stream flush failed; keeping last valid transcript session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return (currentSnapshot, true)
+        }
     }
 
     private func finishStoppedStreamWithError(sessionID: UUID, error: Error) {
@@ -415,10 +907,14 @@ public actor LiveWhisperEngine: WhisperEngine {
                 errorDescription: error.localizedDescription
             ))
         activeStream.continuation.finish(throwing: error)
+        activeStream.completion.complete()
         self.activeStream = nil
     }
 
     public func transcribeMemo(_ request: MemoTranscriptionRequest) async throws -> MemoTranscriptionResult {
+        if let activeStream {
+            await activeStream.completion.wait()
+        }
         try await ensurePrepared(for: request.profile)
         guard let whisperKit else {
             throw WhisperEngineRuntimeError.engineUnavailable
@@ -434,10 +930,13 @@ public actor LiveWhisperEngine: WhisperEngine {
             modelName: preparedRequest?.resolvedModelName ?? request.profile.defaultModelName
         )
 
-        let results = try await whisperKit.transcribe(
-            audioPath: request.audioFileURL.path,
-            decodeOptions: decodeOptions
-        )
+        let results = try await inferenceQueue.run { [inference, whisperKit] in
+            try await inference.transcribe(
+                model: whisperKit,
+                audioPath: request.audioFileURL.path,
+                decodeOptions: decodeOptions
+            )
+        }
         let merged = TranscriptionUtilities.mergeTranscriptionResults(results.map(Optional.some))
         let cleanedText = Self.cleanTranscription(merged.text)
         let payload = TranscriptionPayload(
@@ -453,10 +952,74 @@ public actor LiveWhisperEngine: WhisperEngine {
     }
 
     private func ensurePrepared(for profile: ModelProfile) async throws {
-        if whisperKit != nil, preparedRequest?.profile == profile {
-            return
+        try await prepare(WhisperEnginePreparation(profile: profile))
+    }
+
+    /// Test-only characterization hook. It exercises current final-flush
+    /// inference behavior without requiring microphone capture or model files.
+    internal func _testFlushFinalAudio(
+        audioSamples: [Float],
+        lastDecodedSamples: Int
+    ) async throws -> String? {
+        guard whisperKit != nil else {
+            throw WhisperEngineRuntimeError.engineUnavailable
         }
-        try await loadWhisperKit(for: WhisperEnginePreparation(profile: profile))
+        guard let snapshot = try await flushFinalAudio(
+            using: DecodingOptions(),
+            lastDecodedSamples: lastDecodedSamples,
+            audioSamples: audioSamples
+        ) else {
+            return nil
+        }
+        return snapshot.transcript
+    }
+
+    internal func _testResolveFinalTail(
+        liveTranscript: String,
+        liveWords: [TranscriptWord] = [],
+        tailTranscript: String? = nil,
+        tailWords: [TranscriptWord] = [],
+        decodedThroughSeconds: Double = 0,
+        outcome: FinalTailTestDecodeOutcome
+    ) async throws -> FinalTailTestResolution {
+        guard whisperKit != nil else {
+            throw WhisperEngineRuntimeError.engineUnavailable
+        }
+
+        let currentSnapshot = StreamSnapshot(
+            transcript: Self.cleanTranscription(liveTranscript),
+            words: liveWords,
+            lastBufferSize: Int(decodedThroughSeconds * Double(WhisperKit.sampleRate))
+        )
+        let tailSnapshot = tailTranscript.map {
+            StreamSnapshot(
+                transcript: Self.cleanTranscription($0),
+                words: tailWords,
+                lastBufferSize: currentSnapshot.lastBufferSize
+            )
+        }
+        let tailResult: Result<StreamSnapshot?, Error>
+        switch outcome {
+        case .success:
+            tailResult = .success(tailSnapshot)
+        case .noResult:
+            tailResult = .success(nil)
+        case .failure:
+            tailResult = .failure(FinalTailTestError.failed)
+        case .canceled:
+            tailResult = .failure(CancellationError())
+        }
+
+        let resolution = try resolveFinalTail(
+            sessionID: UUID(),
+            currentSnapshot: currentSnapshot,
+            tailResult: tailResult
+        )
+        return FinalTailTestResolution(
+            transcript: resolution.snapshot.transcript,
+            words: resolution.snapshot.words,
+            usedLiveSnapshotFallback: resolution.usedLiveSnapshotFallback
+        )
     }
 
     private func finishStream(sessionID: UUID, error: Error?) {
@@ -498,6 +1061,7 @@ public actor LiveWhisperEngine: WhisperEngine {
             activeStream.continuation.finish()
         }
 
+        activeStream.completion.complete()
         self.activeStream = nil
     }
 
@@ -693,25 +1257,6 @@ public actor LiveWhisperEngine: WhisperEngine {
             lastBufferSize: state.lastBufferSize,
             revision: revision
         )
-    }
-
-    private nonisolated static func moreCompleteSnapshot(
-        _ current: StreamSnapshot,
-        _ candidate: StreamSnapshot
-    ) -> StreamSnapshot {
-        let transcript = StreamingTranscriptAccumulator.moreComplete(
-            current.transcript,
-            candidate.transcript
-        )
-
-        if transcript == candidate.transcript {
-            return candidate
-        }
-
-        var preserved = current
-        preserved.audioLevel = candidate.audioLevel
-        preserved.lastBufferSize = candidate.lastBufferSize
-        return preserved
     }
 
     private func logStreamEvent(_ message: String) {

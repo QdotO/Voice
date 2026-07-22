@@ -1,21 +1,104 @@
-import AVFoundation
+// AVFAudio conversion types lack Sendable annotations; converter and buffers stay
+// within synchronous conversion calls and do not escape their interop boundary.
+@preconcurrency import AVFoundation
 import Foundation
 import OSLog
 
+internal final class AudioCaptureState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var capturing = false
+    private var audioBuffer: [Float] = []
+    private var smoothedLevel: Float = 0
+    private var errorHandler: (@Sendable (String) -> Void)?
+    private var levelHandler: (@Sendable (Float) -> Void)?
+
+    func isCapturing() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturing
+    }
+
+    func setCapturing(_ value: Bool) {
+        lock.lock()
+        capturing = value
+        lock.unlock()
+    }
+
+    func drainAudio() -> [Float] {
+        lock.lock()
+        let audio = audioBuffer
+        audioBuffer.removeAll()
+        lock.unlock()
+        return audio
+    }
+
+    func record(samples: [Float], level: Float) -> (Float, (@Sendable (Float) -> Void)?) {
+        lock.lock()
+        audioBuffer.append(contentsOf: samples)
+        smoothedLevel = (smoothedLevel * 0.8) + (level * 0.2)
+        let result = (smoothedLevel, levelHandler)
+        lock.unlock()
+        return result
+    }
+
+    func setErrorHandler(_ handler: (@Sendable (String) -> Void)?) {
+        lock.lock()
+        errorHandler = handler
+        lock.unlock()
+    }
+
+    func setLevelHandler(_ handler: (@Sendable (Float) -> Void)?) {
+        lock.lock()
+        levelHandler = handler
+        lock.unlock()
+    }
+
+    func currentErrorHandler() -> (@Sendable (String) -> Void)? {
+        lock.lock()
+        let handler = errorHandler
+        lock.unlock()
+        return handler
+    }
+}
+
+private final class AudioCaptureConverterInputState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var consumed = false
+
+    func takeInput() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if consumed {
+            return false
+        }
+        consumed = true
+        return true
+    }
+}
+
 /// Captures microphone audio and converts to 16kHz mono for Whisper
-public final class AudioCapture {
+///
+/// AVAudioEngine invokes its tap off the UI actor. Mutable samples, levels, and
+/// callbacks live in `AudioCaptureState`; converter state stays call-local.
+public final class AudioCapture: @unchecked Sendable {
     private let logger = Logger(subsystem: "Whisper", category: "AudioCapture")
     private let engine = AVAudioEngine()
-    private var isCapturing = false
-    private var audioBuffer: [Float] = []
-    private let bufferLock = NSLock()
-    private var smoothedLevel: Float = 0
+    private let state = AudioCaptureState()
 
     // Whisper requires 16kHz mono audio
     private let targetSampleRate: Double = 16000
 
-    public var onError: ((String) -> Void)?
-    public var onLevel: ((Float) -> Void)?
+    public var onError: (@Sendable (String) -> Void)? {
+        get { state.currentErrorHandler() }
+        set { state.setErrorHandler(newValue) }
+    }
+
+    public var onLevel: (@Sendable (Float) -> Void)? {
+        get {
+            state.currentLevelHandler()
+        }
+        set { state.setLevelHandler(newValue) }
+    }
 
     public init() {}
 
@@ -37,7 +120,7 @@ public final class AudioCapture {
 
     /// Start capturing audio
     public func start() throws {
-        guard !isCapturing else { return }
+        guard !state.isCapturing() else { return }
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -75,24 +158,18 @@ public final class AudioCapture {
 
         engine.prepare()
         try engine.start()
-        isCapturing = true
+        state.setCapturing(true)
         logger.info("Started capturing audio")
     }
 
     /// Stop capturing and return all collected audio
     public func stop() -> [Float] {
-        guard isCapturing else { return [] }
+        guard state.isCapturing() else { return [] }
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        isCapturing = false
-
-        bufferLock.lock()
-        let audio = audioBuffer
-        audioBuffer.removeAll()
-        bufferLock.unlock()
-
-        return audio
+        state.setCapturing(false)
+        return state.drainAudio()
     }
 
     private func processAudio(
@@ -105,7 +182,7 @@ public final class AudioCapture {
         let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
 
         guard outputFrameCount > 0 else {
-            onError?("Invalid output frame count: \(outputFrameCount)")
+            state.currentErrorHandler()?("Invalid output frame count: \(outputFrameCount)")
             return
         }
 
@@ -115,26 +192,29 @@ public final class AudioCapture {
                 frameCapacity: outputFrameCount
             )
         else {
-            onError?("Failed to create output buffer (frameCount: \(outputFrameCount))")
+            state.currentErrorHandler()?("Failed to create output buffer (frameCount: \(outputFrameCount))")
             return
         }
 
-        // Track if we've consumed the input buffer (critical fix!)
-        var inputBufferConsumed = false
+        // AVAudioConverter invokes input provider synchronously for this conversion.
+        // Buffer is returned only during this call; it is not stored or used afterward.
+        // State object satisfies Sendable checking without letting converter state escape.
+        let inputState = AudioCaptureConverterInputState()
 
         var error: NSError?
-        let status = converter.convert(to: outputBuffer, error: &error) { inNumPackets, outStatus in
-            if inputBufferConsumed {
+        let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            if !inputState.takeInput() {
                 outStatus.pointee = .noDataNow
                 return nil
             }
-            inputBufferConsumed = true
             outStatus.pointee = .haveData
             return buffer
         }
 
         guard status != .error, error == nil else {
-            onError?("Audio conversion failed: \(error?.localizedDescription ?? "unknown")")
+            state.currentErrorHandler()?(
+                "Audio conversion failed: \(error?.localizedDescription ?? "unknown")"
+            )
             return
         }
 
@@ -144,12 +224,8 @@ public final class AudioCapture {
             UnsafeBufferPointer(start: channelData, count: Int(outputBuffer.frameLength)))
 
         let level = normalizedLevel(samples)
-        smoothedLevel = (smoothedLevel * 0.8) + (level * 0.2)
-        onLevel?(smoothedLevel)
-
-        bufferLock.lock()
-        audioBuffer.append(contentsOf: samples)
-        bufferLock.unlock()
+        let (smoothedLevel, levelHandler) = state.record(samples: samples, level: level)
+        levelHandler?(smoothedLevel)
     }
 
     private func normalizedLevel(_ samples: [Float]) -> Float {
@@ -169,6 +245,15 @@ public final class AudioCapture {
         let maxDb: Float = 0
         let clamped = min(max(db, minDb), maxDb)
         return (clamped - minDb) / (maxDb - minDb)
+    }
+}
+
+private extension AudioCaptureState {
+    func currentLevelHandler() -> (@Sendable (Float) -> Void)? {
+        lock.lock()
+        let handler = levelHandler
+        lock.unlock()
+        return handler
     }
 }
 

@@ -1,5 +1,126 @@
 import AppKit
 import Carbon.HIToolbox
+import WhisperShared
+
+private final class AppKitPasteboardAdapter: PasteboardTextTransactionPasteboard {
+    private let pasteboard: NSPasteboard
+
+    init(_ pasteboard: NSPasteboard) {
+        self.pasteboard = pasteboard
+    }
+
+    var changeCount: Int {
+        pasteboard.changeCount
+    }
+
+    func snapshot() -> [PasteboardTextTransactionItem] {
+        (pasteboard.pasteboardItems ?? []).map { item in
+            PasteboardTextTransactionItem(
+                representations: item.types.compactMap { type in
+                    guard let data = item.data(forType: type) else { return nil }
+                    return PasteboardTextTransactionRepresentation(
+                        type: type.rawValue,
+                        data: data
+                    )
+                }
+            )
+        }
+    }
+
+    func replaceWithPlainText(_ text: String) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    func restore(_ items: [PasteboardTextTransactionItem]) {
+        pasteboard.clearContents()
+
+        let pasteboardItems = items.map { item in
+            let pasteboardItem = NSPasteboardItem()
+            for representation in item.representations {
+                pasteboardItem.setData(
+                    representation.data,
+                    forType: NSPasteboard.PasteboardType(representation.type)
+                )
+            }
+            return pasteboardItem
+        }
+
+        if !pasteboardItems.isEmpty {
+            pasteboard.writeObjects(pasteboardItems)
+        }
+    }
+}
+
+private final class AppKitAXElementToken {
+    let element: AXUIElement
+
+    init(_ element: AXUIElement) {
+        self.element = element
+    }
+}
+
+private final class AppKitFocusedAXTextInsertionAdapter: FocusedAXTextInsertionAdapter {
+    func focusedElement() -> AnyObject? {
+        let system = AXUIElementCreateSystemWide()
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            system,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        ) == .success, let focused else {
+            return nil
+        }
+
+        return AppKitAXElementToken(focused as! AXUIElement)
+    }
+
+    func value(of element: AnyObject) -> String? {
+        guard let element = element as? AppKitAXElementToken else { return nil }
+        return copyAttribute(element.element, kAXValueAttribute as CFString) as? String
+    }
+
+    func selectedTextRange(of element: AnyObject) -> AXTextSelectionRange? {
+        guard let element = element as? AppKitAXElementToken,
+            let rawValue = copyAttribute(element.element, kAXSelectedTextRangeAttribute as CFString)
+        else {
+            return nil
+        }
+        let value = rawValue as! AXValue
+        guard AXValueGetType(value) == .cfRange else { return nil }
+
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(value, .cfRange, &range) else { return nil }
+        return AXTextSelectionRange(location: range.location, length: range.length)
+    }
+
+    func isEditable(_ element: AnyObject) -> Bool {
+        guard let element = element as? AppKitAXElementToken else { return false }
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element.element,
+            kAXSelectedTextAttribute as CFString,
+            &settable
+        ) == .success && settable.boolValue
+    }
+
+    func replaceSelectedText(_ text: String, in element: AnyObject) -> Bool {
+        guard let element = element as? AppKitAXElementToken else { return false }
+        return AXUIElementSetAttributeValue(
+            element.element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFTypeRef
+        ) == .success
+    }
+
+    private func copyAttribute(_ element: AXUIElement, _ attribute: CFString) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value
+    }
+}
 
 /// Injects transcribed text into the active application
 final class TextInjector {
@@ -31,21 +152,11 @@ final class TextInjector {
 
     /// Request accessibility permission
     static func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        // SDK exposes kAXTrustedCheckOptionPrompt as mutable global state. Use its
+        // documented CFDictionary key value to avoid crossing that unsafe global.
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let options = [promptKey: true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
-    }
-
-    /// Type text character by character into the active app
-    func type(_ text: String) throws {
-        guard Self.isAccessibilityEnabled else {
-            throw InjectionError.accessibilityNotEnabled
-        }
-
-        for char in text {
-            try typeCharacter(char)
-            // Small delay to prevent dropped characters
-            Thread.sleep(forTimeInterval: 0.005)
-        }
     }
 
     /// Type text without blocking the main thread between key events.
@@ -62,110 +173,33 @@ final class TextInjector {
         }
     }
 
-    /// Paste text using clipboard (faster for long text)
-    func paste(_ text: String) throws {
-        guard Self.isAccessibilityEnabled else {
-            throw InjectionError.accessibilityNotEnabled
-        }
-
-        // Save current clipboard
-        let pasteboard = NSPasteboard.general
-        let previousContents = pasteboard.string(forType: .string)
-
-        // Set new text
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        // Simulate Cmd+V
-        try simulateKeyPress(
-            keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand, tap: .cgSessionEventTap)
-
-        // Allow enough time for the target app to read from the clipboard
-        Thread.sleep(forTimeInterval: 0.2)
-
-        // Restore previous clipboard after a short delay
-        if let previous = previousContents {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                pasteboard.clearContents()
-                pasteboard.setString(previous, forType: .string)
-            }
-        }
-    }
-
     /// Paste text while optionally restoring the previous clipboard contents.
     func pasteText(_ text: String, preserveClipboard: Bool = true) async throws {
         guard Self.isAccessibilityEnabled else {
             throw InjectionError.accessibilityNotEnabled
         }
 
-        let pasteboard = NSPasteboard.general
-        let previousContents = preserveClipboard ? pasteboard.string(forType: .string) : nil
-
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        try simulateKeyPress(
-            keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand, tap: .cgSessionEventTap)
-
-        try await Task.sleep(nanoseconds: 200_000_000)
-
-        guard preserveClipboard else { return }
-
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        pasteboard.clearContents()
-        if let previousContents {
-            pasteboard.setString(previousContents, forType: .string)
-        }
+        try await PasteboardTextTransaction.paste(
+            text,
+            preserveClipboard: preserveClipboard,
+            using: AppKitPasteboardAdapter(NSPasteboard.general),
+            triggerPaste: {
+                try simulateKeyPress(
+                    keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand, tap: .cgSessionEventTap)
+            },
+            sleep: { nanoseconds in
+                try await Task.sleep(nanoseconds: nanoseconds)
+            }
+        )
     }
 
-    /// Insert text into the currently focused UI element via Accessibility
-    func insertIntoFocusedElement(_ text: String) throws {
-        guard Self.isAccessibilityEnabled else {
-            throw InjectionError.accessibilityNotEnabled
-        }
-
-        let system = AXUIElementCreateSystemWide()
-        var focused: CFTypeRef?
-        let focusedStatus = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute as CFString, &focused)
-        guard focusedStatus == .success, let focusedElement = focused else {
-            throw InjectionError.focusedElementNotFound
-        }
-
-        let axElement = focusedElement as! AXUIElement
-        guard tryInsertText(text, into: axElement) else {
-            throw InjectionError.focusedElementNotEditable
-        }
-    }
-
-    /// Advanced Accessibility insertion that falls back to searching the focused window
+    /// Accessibility insertion against focused element only. Caller handles paste fallback.
     func insertIntoFocusedElementAdvanced(_ text: String) throws -> Bool {
         guard Self.isAccessibilityEnabled else {
             throw InjectionError.accessibilityNotEnabled
         }
 
-        let system = AXUIElementCreateSystemWide()
-        if let focused = copyAttribute(system, attribute: kAXFocusedUIElementAttribute as CFString)
-        {
-            let element = focused as! AXUIElement
-            if tryInsertText(text, into: element) {
-                return true
-            }
-        }
-
-        if let focusedWindow = copyAttribute(
-            system, attribute: kAXFocusedWindowAttribute as CFString)
-        {
-            let windowElement = focusedWindow as! AXUIElement
-            if let target = findEditableElement(in: windowElement, maxDepth: 5, maxNodes: 300) {
-                if tryInsertText(text, into: target) {
-                    return true
-                }
-            }
-        }
-
-        return false
+        return FocusedAXTextInserter(adapter: AppKitFocusedAXTextInsertionAdapter()).insert(text)
     }
 
     // MARK: - Private
@@ -216,87 +250,4 @@ final class TextInjector {
         keyUp.post(tap: tap)
     }
 
-    private func tryInsertText(_ text: String, into element: AXUIElement) -> Bool {
-        if AXUIElementSetAttributeValue(
-            element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success
-        {
-            return true
-        }
-
-        if AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef)
-            == .success
-        {
-            return true
-        }
-
-        return false
-    }
-
-    private func copyAttribute(_ element: AXUIElement, attribute: CFString) -> CFTypeRef? {
-        var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(element, attribute, &value)
-        guard status == .success else { return nil }
-        return value
-    }
-
-    private func findEditableElement(
-        in root: AXUIElement,
-        maxDepth: Int,
-        maxNodes: Int
-    ) -> AXUIElement? {
-        let editableRoles: Set<String> = [
-            kAXTextFieldRole as String,
-            kAXTextAreaRole as String,
-            kAXComboBoxRole as String,
-            "AXSearchField",
-        ]
-
-        var queue: [(AXUIElement, Int)] = [(root, 0)]
-        var visited = 0
-
-        while !queue.isEmpty, visited < maxNodes {
-            let (element, depth) = queue.removeFirst()
-            visited += 1
-
-            if isEditable(element, roles: editableRoles) {
-                return element
-            }
-
-            guard depth < maxDepth else { continue }
-            if let children = copyAttribute(element, attribute: kAXChildrenAttribute as CFString)
-                as? [AXUIElement]
-            {
-                for child in children {
-                    queue.append((child, depth + 1))
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private func isEditable(_ element: AXUIElement, roles: Set<String>) -> Bool {
-        var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-            == .success,
-            let role = roleRef as? String,
-            roles.contains(role)
-        {
-            var settable = DarwinBoolean(false)
-            if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
-                == .success,
-                settable.boolValue
-            {
-                return true
-            }
-            if AXUIElementIsAttributeSettable(
-                element, kAXSelectedTextAttribute as CFString, &settable) == .success,
-                settable.boolValue
-            {
-                return true
-            }
-        }
-
-        return false
-    }
 }

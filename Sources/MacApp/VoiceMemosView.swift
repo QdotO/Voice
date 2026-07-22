@@ -6,6 +6,8 @@ struct VoiceMemosView: View {
     @State private var renameTarget: VoiceMemo?
     @State private var renameText = ""
     @State private var selectedMemoID: UUID?
+    @State private var pendingDestructiveAction: VoiceMemoDestructiveAction?
+    @FocusState private var focusedMemoID: UUID?
 
     var body: some View {
         ZStack {
@@ -18,20 +20,18 @@ struct VoiceMemosView: View {
                 if manager.memos.isEmpty {
                     emptyState
                 } else {
-                    HStack(spacing: 0) {
+                    HSplitView {
                         memoList
-
-                        Rectangle()
-                            .fill(Color.white.opacity(0.08))
-                            .frame(width: 1)
-
                         memoDetail
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
-        .frame(width: 720, height: 500)
+        .frame(
+            minWidth: WhisperWindowLayout.voiceMemosMinimum.width,
+            minHeight: WhisperWindowLayout.voiceMemosMinimum.height
+        )
         .alert("Rename Memo", isPresented: renameBinding) {
             TextField("Title", text: $renameText)
             Button("Cancel", role: .cancel) {
@@ -44,36 +44,51 @@ struct VoiceMemosView: View {
                 renameTarget = nil
             }
         }
+        .alert(item: $pendingDestructiveAction) { action in
+            Alert(
+                title: Text(action.title),
+                message: Text(action.message),
+                primaryButton: .destructive(Text(action.confirmButtonTitle)) {
+                    perform(action)
+                },
+                secondaryButton: .cancel(Text("Cancel"))
+            )
+        }
         .onAppear {
             ensureSelection()
         }
-        .onChange(of: manager.memos) { _ in
+        .onChange(of: manager.memos) {
             ensureSelection()
         }
     }
 
     private var memoList: some View {
-        List(manager.memos) { memo in
-            VoiceMemoRow(
-                memo: memo,
-                isPlaying: manager.currentlyPlayingID == memo.id,
-                isSelected: selectedMemoID == memo.id,
-                onSelect: { selectedMemoID = memo.id },
-                onPlay: { manager.togglePlayback(for: memo) },
-                onRename: { openRename(memo) },
-                onShare: { manager.audioURL(for: memo) },
-                onExport: { manager.exportMemo(memo) },
-                onRetranscribe: { manager.retranscribe(memo) },
-                onToggleTranscribe: { manager.toggleAutoTranscribe(memo) },
-                onDelete: { manager.deleteMemo(memo) }
-            )
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .padding(.vertical, 4)
+        List(selection: $selectedMemoID) {
+            ForEach(manager.memos) { memo in
+                VoiceMemoRow(
+                    memo: memo,
+                    isPlaying: manager.currentlyPlayingID == memo.id,
+                    isSelected: selectedMemoID == memo.id,
+                    isFocused: focusedMemoID == memo.id,
+                    onPlay: { manager.togglePlayback(for: memo) },
+                    onRename: { openRename(memo) },
+                    onShare: { manager.audioURL(for: memo) },
+                    onExport: { manager.exportMemo(memo) },
+                    onRetranscribe: { manager.retranscribe(memo) },
+                    onToggleTranscribe: { manager.toggleAutoTranscribe(memo) },
+                    onDelete: { pendingDestructiveAction = .delete(memo) }
+                )
+                .tag(memo.id)
+                .focused($focusedMemoID, equals: memo.id)
+                .focusable()
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 4)
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .frame(width: 320)
+        .frame(minWidth: 260, idealWidth: 320, maxWidth: 360)
         .background(Color.black.opacity(0.15))
     }
 
@@ -85,7 +100,7 @@ struct VoiceMemosView: View {
                 memoDetailPlaceholder
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .padding(20)
     }
 
@@ -151,21 +166,25 @@ struct VoiceMemosView: View {
                         .opacity(manager.isRecording ? 1 : 0.35)
 
                     Button(action: toggleRecording) {
-                        ZStack {
-                            Circle()
-                                .fill(manager.isRecording ? Color.red : Color.white.opacity(0.15))
-                                .frame(width: 48, height: 48)
-                            Circle()
-                                .stroke(Color.white.opacity(0.2), lineWidth: 2)
-                                .frame(width: 56, height: 56)
-                            if manager.isRecording {
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 16, height: 16)
-                            }
-                        }
+                        Label(
+                            manager.isRecording ? "Stop Recording" : "Record",
+                            systemImage: manager.isRecording ? "stop.fill" : "record.circle"
+                        )
+                        .frame(minHeight: DesignSystem.ControlHeight.primary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.whisperPrimary())
+                    .accessibilityLabel(
+                        manager.isRecording ? "Stop recording voice memo" : "Record voice memo"
+                    )
+                    .accessibilityValue(
+                        VoiceMemoAccessibility.durationValue(manager.currentDuration)
+                    )
+                    .accessibilityHint(
+                        manager.isRecording
+                            ? "Stops and saves current voice memo"
+                            : "Starts a new voice memo recording"
+                    )
+                    .help(manager.isRecording ? "Stop recording" : "Record voice memo")
                 }
 
                 Text(TimeFormatter.formatDuration(manager.currentDuration))
@@ -222,6 +241,14 @@ struct VoiceMemosView: View {
         }
     }
 
+    private func perform(_ action: VoiceMemoDestructiveAction) {
+        switch action {
+        case .delete(let memo):
+            manager.deleteMemo(memo)
+            ensureSelection()
+        }
+    }
+
     private var missingTimingsCount: Int {
         manager.memos.filter { ($0.transcriptWords?.isEmpty ?? true) && !$0.isTranscribing }.count
     }
@@ -231,7 +258,7 @@ private struct VoiceMemoRow: View {
     let memo: VoiceMemo
     let isPlaying: Bool
     let isSelected: Bool
-    let onSelect: () -> Void
+    let isFocused: Bool
     let onPlay: () -> Void
     let onRename: () -> Void
     let onShare: () -> URL
@@ -245,11 +272,15 @@ private struct VoiceMemoRow: View {
             Button(action: onPlay) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 12))
-                    .frame(width: 28, height: 28)
-                    .background(Color.white.opacity(0.1))
+                    .frame(width: 44, height: 44)
+                    .background(DesignSystem.Surface.raised)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isPlaying ? "Pause memo" : "Play memo")
+            .accessibilityValue(VoiceMemoAccessibility.durationValue(memo.durationSeconds))
+            .accessibilityHint("Plays audio without changing memo selection")
+            .help(isPlaying ? "Pause memo" : "Play memo")
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
@@ -289,9 +320,13 @@ private struct VoiceMemoRow: View {
             HStack(spacing: 10) {
                 ShareLink(item: onShare()) {
                     Image(systemName: "square.and.arrow.up")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(DesignSystem.Text.secondary)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Share memo")
+                .accessibilityHint("Share audio for this memo")
+                .help("Share memo")
 
                 Menu {
                     Button("Rename") {
@@ -315,28 +350,69 @@ private struct VoiceMemoRow: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(DesignSystem.Text.secondary)
+                        .frame(width: 44, height: 44)
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel("More actions for \(memo.title)")
+                .accessibilityHint("Rename, export, transcribe, or delete memo")
+                .help("More memo actions")
             }
         }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.05))
+                .fill(isSelected ? DesignSystem.States.active.opacity(0.18) : DesignSystem.Surface.raised)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
-                    isSelected ? Color.white.opacity(0.25) : Color.white.opacity(0.08), lineWidth: 1
+                    isFocused
+                        ? DesignSystem.States.activeBright
+                        : (isSelected ? DesignSystem.States.active.opacity(0.7) : DesignSystem.Stroke.subtle),
+                    lineWidth: isFocused || isSelected ? 1.5 : 1
                 )
         )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect()
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+}
+
+private enum VoiceMemoDestructiveAction: Identifiable {
+    case delete(VoiceMemo)
+
+    var id: UUID {
+        switch self {
+        case .delete(let memo): return memo.id
         }
     }
 
+    var title: String {
+        "Delete Memo?"
+    }
+
+    var message: String {
+        switch self {
+        case .delete(let memo):
+            let date = DateFormatter.localizedString(
+                from: memo.createdAt,
+                dateStyle: .medium,
+                timeStyle: .short
+            )
+            return "This permanently deletes \u{201C}\(memo.title)\u{201D} recorded \(date), including its audio and transcript. This cannot be undone."
+        }
+    }
+
+    var confirmButtonTitle: String {
+        "Delete Memo"
+    }
+}
+
+private enum VoiceMemoAccessibility {
+    static func durationValue(_ duration: TimeInterval) -> String {
+        "Duration \(TimeFormatter.formatDuration(duration))"
+    }
 }
 
 private struct VoiceMemoDetailView: View {
@@ -398,24 +474,34 @@ private struct VoiceMemoDetailView: View {
             .padding(.horizontal, 6)
             .background(Color.black.opacity(0.25))
             .cornerRadius(14)
+            .accessibilityHidden(true)
         }
     }
 
     private var playbackControls: some View {
         VStack(spacing: 10) {
             HStack(spacing: 12) {
-                Button(action: togglePlayback) {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.15))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
+                    Button(action: togglePlayback) {
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .background(DesignSystem.Surface.raised)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isPlaying ? "Pause memo" : "Play memo")
+                    .accessibilityValue(VoiceMemoAccessibility.durationValue(playbackDuration))
+                    .accessibilityHint("Starts or pauses playback")
+                    .help(isPlaying ? "Pause memo" : "Play memo")
 
                 VStack(alignment: .leading, spacing: 4) {
                     Slider(value: playbackBinding, in: 0...max(playbackDuration, 0.1))
                         .tint(.blue)
+                        .accessibilityLabel("Playback position")
+                        .accessibilityValue(
+                            "\(TimeFormatter.formatDuration(playbackTime)) of \(TimeFormatter.formatDuration(playbackDuration))"
+                        )
+                        .accessibilityHint("Adjusts memo playback position")
                     HStack {
                         Text(TimeFormatter.formatDuration(playbackTime))
                             .font(.caption2)
@@ -466,6 +552,9 @@ private struct VoiceMemoDetailView: View {
                 .buttonStyle(.plain)
                 .foregroundColor(.secondary)
                 .disabled(memo.isTranscribing)
+                .accessibilityLabel("Re-transcribe memo")
+                .accessibilityHint("Replaces current transcript with a new transcription")
+                .help("Re-transcribe memo")
             }
 
             TranscriptHighlightView(
@@ -562,6 +651,7 @@ private struct TranscriptHighlightView: View {
     let isActive: Bool
 
     @State private var lastScrolledIndex: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let baseColor = Color.primary.opacity(0.86)
     private let highlightText = Color.primary
@@ -598,12 +688,16 @@ private struct TranscriptHighlightView: View {
                     .padding(14)
                 }
             }
-            .onChange(of: activeWordIndex) { newValue in
+            .onChange(of: activeWordIndex) { _, newValue in
                 guard isActive, let index = newValue else { return }
                 guard lastScrolledIndex != index else { return }
                 lastScrolledIndex = index
-                withAnimation(.easeInOut(duration: 0.25)) {
+                if reduceMotion {
                     proxy.scrollTo(index, anchor: .center)
+                } else {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(index, anchor: .center)
+                    }
                 }
             }
         }
@@ -771,5 +865,6 @@ private struct RecordingWaveform: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
+        .accessibilityHidden(true)
     }
 }

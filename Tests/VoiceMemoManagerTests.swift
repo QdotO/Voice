@@ -5,6 +5,117 @@ import XCTest
 
 @MainActor
 final class VoiceMemoManagerTests: XCTestCase {
+    func testStopRecordingWithoutStartIsNoOp() {
+        let manager = makeManager(store: VoiceMemoStore.makeInDirectory(makeTempDir()))
+
+        manager.stopRecording()
+
+        XCTAssertFalse(manager.isRecording)
+        XCTAssertEqual(manager.memos, [])
+    }
+
+    func testTogglePlaybackForMissingAudioLeavesPlaybackStopped() {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "missing.m4a")
+        store.add(memo)
+        let manager = makeManager(store: store)
+
+        manager.togglePlayback(for: memo)
+
+        XCTAssertNil(manager.currentlyPlayingID)
+        XCTAssertEqual(manager.playbackTime, 0)
+        XCTAssertEqual(manager.playbackDuration, 0)
+    }
+
+    func testDeleteRemovesAudioBeforeMetadata() throws {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "memo.m4a")
+        store.add(memo)
+        let audioURL = store.memoURL(for: memo)
+        try Data("audio".utf8).write(to: audioURL)
+        let manager = makeManager(store: store)
+
+        let result = manager.deleteMemo(memo)
+
+        XCTAssertEqual(result, .deleted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertTrue(manager.memos.isEmpty)
+    }
+
+    func testDeleteMissingAudioRemovesMetadataWithExplicitOutcome() {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "missing.m4a")
+        store.add(memo)
+        let manager = makeManager(store: store)
+
+        let result = manager.deleteMemo(memo)
+
+        XCTAssertEqual(result, .deletedRecordAudioMissing)
+        XCTAssertTrue(manager.memos.isEmpty)
+    }
+
+    func testDeleteDirectoryAudioRemovesMetadata() throws {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "audio-directory")
+        store.add(memo)
+        let audioURL = store.memoURL(for: memo)
+        try FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
+        try Data("keep directory non-empty".utf8)
+            .write(to: audioURL.appendingPathComponent("child"))
+        let manager = makeManager(store: store)
+
+        let result = manager.deleteMemo(memo)
+
+        XCTAssertEqual(result, .deleted)
+        XCTAssertTrue(manager.memos.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    func testExportCopiesAudioAndReturnsDestination() throws {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "memo.m4a")
+        store.add(memo)
+        try Data("audio".utf8).write(to: store.memoURL(for: memo))
+        let destination = makeTempDir().appendingPathComponent("exported.m4a")
+        let manager = makeManager(store: store)
+
+        let result = manager.exportMemo(memo, to: destination)
+
+        XCTAssertEqual(result, .exported(destination))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("audio".utf8))
+    }
+
+    func testExportMissingAudioReturnsTypedFailure() {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "missing.m4a")
+        store.add(memo)
+        let manager = makeManager(store: store)
+        let destination = makeTempDir().appendingPathComponent("exported.m4a")
+
+        let result = manager.exportMemo(memo, to: destination)
+
+        XCTAssertEqual(result, .sourceAudioMissing(store.memoURL(for: memo)))
+    }
+
+    func testExportCopyFailureReturnsTypedFailure() throws {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(audioFileName: "memo.m4a")
+        store.add(memo)
+        let sourceURL = store.memoURL(for: memo)
+        try Data("audio".utf8).write(to: sourceURL)
+        let destination = makeTempDir().appendingPathComponent("existing.m4a")
+        try Data("existing".utf8).write(to: destination)
+        let manager = makeManager(store: store)
+
+        let result = manager.exportMemo(memo, to: destination)
+
+        guard case .failed(.copyFailed(let source, let failedDestination, _)) = result else {
+            return XCTFail("Expected typed copy failure, got \(result)")
+        }
+        XCTAssertEqual(source, sourceURL)
+        XCTAssertEqual(failedDestination, destination)
+    }
+
     func testRetranscribeUsesSharedEngineAndStoresTranscript() async throws {
         let tempDir = makeTempDir()
         let store = VoiceMemoStore.makeInDirectory(tempDir)
@@ -71,6 +182,34 @@ final class VoiceMemoManagerTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests.first?.memoID, memo.id)
         XCTAssertEqual(requests.first?.prompt, "SwiftUI, Whisper")
+    }
+
+    func testRetranscribeFailureClearsTranscriptionState() async throws {
+        let store = VoiceMemoStore.makeInDirectory(makeTempDir())
+        let memo = makeMemo(
+            transcript: "old transcript",
+            transcriptWords: [TranscriptWord(word: "old", start: 0, end: 0.2)]
+        )
+        store.add(memo)
+        let fakeEngine = FakeWhisperEngine(
+            memoResults: [.failure(.scripted("inference failed"))]
+        )
+        let manager = VoiceMemoManager(
+            engine: fakeEngine,
+            settingsStore: InMemorySettingsStore(),
+            promptProvider: { "" },
+            store: store
+        )
+
+        manager.retranscribe(memo)
+        try await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            manager.memos.first?.isTranscribing == false
+        }
+
+        let updated = manager.memos.first
+        XCTAssertNil(updated?.transcript)
+        XCTAssertNil(updated?.transcriptWords)
+        XCTAssertFalse(updated?.isTranscribing ?? true)
     }
 
     func testRetranscribeMissingTimingsQueuesEveryTarget() async throws {
@@ -148,6 +287,33 @@ final class VoiceMemoManagerTests: XCTestCase {
         )
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func makeMemo(
+        audioFileName: String = "memo.m4a",
+        transcript: String? = nil,
+        transcriptWords: [TranscriptWord]? = nil
+    ) -> VoiceMemo {
+        VoiceMemo(
+            id: UUID(),
+            title: "Memo",
+            createdAt: Date(),
+            durationSeconds: 1,
+            audioFileName: audioFileName,
+            transcript: transcript,
+            transcriptWords: transcriptWords,
+            isTranscribing: false,
+            autoTranscribe: true
+        )
+    }
+
+    private func makeManager(store: VoiceMemoStore) -> VoiceMemoManager {
+        VoiceMemoManager(
+            engine: FakeWhisperEngine(),
+            settingsStore: InMemorySettingsStore(),
+            promptProvider: { "" },
+            store: store
+        )
     }
 
     private func waitUntil(

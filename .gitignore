@@ -10,6 +10,9 @@ Package.resolved.bak
 # Xcode
 DerivedData/
 .xcode-build/
+.xcode-build-ios/
+.xcode-build-keyboard/
+.xcode-build-distribution/
 .xcode-sourcepackages/
 *.xcodeproj/
 !Whisper.xcodeproj/
@@ -29,3 +32,6 @@ Logs/
 .idea/
 tools/copilot-bridge/node_modules/*
 build/*
+
+# Direct-distribution packages
+dist/

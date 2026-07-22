@@ -4,8 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Whisper",
     platforms: [
-        .macOS(.v14),
-        .iOS(.v17)
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "Whisper", targets: ["Whisper"]),
@@ -36,7 +35,9 @@ let package = Package(
         .testTarget(
             name: "WhisperTests",
             dependencies: ["WhisperShared"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["CrashReporterHarness"]
         ),
-    ]
+    ],
+    swiftLanguageVersions: [.version("6")]
 )

@@ -81,6 +81,81 @@ final class VoiceMemoStoreExtendedTests: XCTestCase {
         XCTAssertEqual(store.allMemos().count, 1)
     }
 
+    func testIndependentStoresInterleaveMutationsWithoutLosingRows() {
+        let firstStore = VoiceMemoStore.makeInDirectory(tempDir)
+        let secondStore = VoiceMemoStore.makeInDirectory(tempDir)
+        let firstMemo = VoiceMemo(
+            title: "First", createdAt: Date(timeIntervalSince1970: 1), durationSeconds: 1,
+            audioFileName: "first.m4a")
+        let secondMemo = VoiceMemo(
+            title: "Second", createdAt: Date(timeIntervalSince1970: 2), durationSeconds: 2,
+            audioFileName: "second.m4a")
+        let thirdMemo = VoiceMemo(
+            title: "Third", createdAt: Date(timeIntervalSince1970: 3), durationSeconds: 3,
+            audioFileName: "third.m4a")
+        let notificationCount = LockedSnapshot(0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: VoiceMemoStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        firstStore.add(firstMemo)
+        secondStore.add(secondMemo)
+        firstStore.update(id: secondMemo.id) { $0.title = "Second updated" }
+        secondStore.remove(id: firstMemo.id)
+        firstStore.add(thirdMemo)
+        secondStore.update(id: thirdMemo.id) { $0.title = "Third updated" }
+        firstStore.remove(id: UUID())
+        secondStore.remove(id: secondMemo.id)
+
+        XCTAssertEqual(notificationCount.read(), 8)
+        XCTAssertEqual(firstStore.allMemos().map(\.title), ["Third updated"])
+    }
+
+    func testConcurrentAddsToOneStoreRetainRows() async {
+        let sharedStore = VoiceMemoStore.makeInDirectory(tempDir)
+        let memos = (0..<40).map { index in
+            VoiceMemo(
+                title: "Memo \(index)",
+                createdAt: Date(timeIntervalSince1970: Double(index)),
+                durationSeconds: 1,
+                audioFileName: "memo-\(index).m4a"
+            )
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for memo in memos {
+                group.addTask {
+                    sharedStore.add(memo)
+                }
+            }
+        }
+
+        let stored = sharedStore.allMemos()
+        XCTAssertEqual(stored.count, memos.count)
+        XCTAssertEqual(Set(stored.map(\.id)), Set(memos.map(\.id)))
+    }
+
+    func testUpdateMissingIdDoesNotPostNotification() {
+        let notificationCount = LockedSnapshot(0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: VoiceMemoStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        store.update(id: UUID()) { $0.title = "Unexpected" }
+
+        XCTAssertEqual(notificationCount.read(), 0)
+    }
+
     // MARK: - Notifications
 
     func testAddPostsNotification() {

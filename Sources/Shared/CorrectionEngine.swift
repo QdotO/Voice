@@ -2,12 +2,14 @@ import Foundation
 import OSLog
 
 /// Tracks corrections and learns from user edits
-public final class CorrectionEngine {
+/// Synchronous facade with immutable configuration and lock-protected correction
+/// snapshots; SQLite serializes persistence access.
+public final class CorrectionEngine: @unchecked Sendable {
     public static let shared = CorrectionEngine()
     public static let didChangeNotification = Notification.Name("CorrectionEngineDidChange")
     private static let logger = Logger(subsystem: "Whisper", category: "CorrectionEngine")
 
-    private var corrections: [Correction] = []
+    private let state: LockedSnapshot<[Correction]>
     private let storage: SQLiteV2Store
     private let maxCorrections = 500
 
@@ -34,12 +36,14 @@ public final class CorrectionEngine {
     }
 
     private init() {
+        state = LockedSnapshot([])
         storage = SQLiteV2Store.shared()
         load()
     }
 
     /// Testable initializer — uses a custom directory for isolation
     init(baseURL: URL) {
+        state = LockedSnapshot([])
         storage = SQLiteV2Store.shared(baseURL: baseURL)
         load()
     }
@@ -47,11 +51,16 @@ public final class CorrectionEngine {
     // MARK: - Learning
 
     public var learnedCorrectionTexts: [String] {
-        corrections.map(\.corrected)
+        currentCorrections().map(\.corrected)
+    }
+
+    /// Immutable correction snapshot for Sendable prompt work.
+    public func learnedCorrectionSnapshot() async -> [String] {
+        currentCorrections().map(\.corrected)
     }
 
     public func allCorrections() -> [CorrectionRecord] {
-        corrections
+        currentCorrections()
             .map {
                 CorrectionRecord(
                     id: $0.id,
@@ -65,13 +74,27 @@ public final class CorrectionEngine {
     }
 
     public func removeCorrection(id: UUID) {
-        corrections.removeAll { $0.id == id }
-        save()
+        do {
+            let didChange = try storage.deleteCorrection(id: id)
+            refreshFromStorage()
+            if didChange {
+                postDidChangeNotification()
+            }
+        } catch {
+            logPersistenceFailure(error, operation: "delete correction")
+        }
     }
 
     public func clearCorrections() {
-        corrections.removeAll()
-        save()
+        do {
+            let didChange = try storage.deleteAllCorrections()
+            refreshFromStorage()
+            if didChange {
+                postDidChangeNotification()
+            }
+        } catch {
+            logPersistenceFailure(error, operation: "clear corrections")
+        }
     }
 
     /// Learn from a user correction
@@ -86,26 +109,29 @@ public final class CorrectionEngine {
         guard !original.isEmpty, !corrected.isEmpty else { return }
         guard original != corrected else { return }
 
-        // Check if this correction already exists
-        if let index = corrections.firstIndex(where: { $0.original == original.lowercased() }) {
-            // Update existing correction if different
-            if corrections[index].corrected != corrected {
-                corrections[index] = Correction(
-                    id: corrections[index].id,
-                    original: original,
-                    corrected: corrected
-                )
-            }
-        } else {
-            corrections.append(Correction(original: original, corrected: corrected))
-        }
+        let correction = Correction(
+            original: original,
+            corrected: corrected
+        )
+        do {
+            let didChange = try storage.learnCorrectionAndTrim(
+                CorrectionRecord(
+                    id: correction.id,
+                    originalText: correction.original,
+                    correctedText: correction.corrected,
+                    createdAt: correction.timestamp,
+                    appliedCount: correction.appliedCount
+                ),
+                maxCorrections: maxCorrections
+            )
+            refreshFromStorage()
+            guard didChange else { return }
 
-        // Trim old corrections if needed
-        if corrections.count > maxCorrections {
-            corrections = Array(corrections.suffix(maxCorrections))
+            postDidChangeNotification()
+        } catch {
+            logPersistenceFailure(error, operation: "learn correction")
+            return
         }
-
-        save()
 
         // If this looks like a vocabulary term, suggest adding it
         if suggestVocabulary, shouldSuggestAsVocab(corrected) {
@@ -120,7 +146,7 @@ public final class CorrectionEngine {
     public func apply(to text: String) -> String {
         var result = text
 
-        for correction in corrections {
+        for correction in currentCorrections() {
             // Build boundary pattern: use \b when edges are word chars,
             // otherwise use lookaround for whitespace/string boundaries
             let escaped = NSRegularExpression.escapedPattern(for: correction.original)
@@ -277,8 +303,13 @@ public final class CorrectionEngine {
     // MARK: - Persistence
 
     private func load() {
+        refreshFromStorage()
+    }
+
+    @discardableResult
+    private func refreshFromStorage() -> [Correction] {
         do {
-            corrections = try storage.fetchCorrections().map {
+            let corrections = try storage.fetchCorrections().map {
                 Correction(
                     id: $0.id,
                     original: $0.originalText,
@@ -287,28 +318,25 @@ public final class CorrectionEngine {
                     appliedCount: $0.appliedCount
                 )
             }
+            state.replace(with: corrections)
+            return corrections
         } catch {
             Self.logger.error(
-                "Failed to load corrections: \(error.localizedDescription, privacy: .public)")
+                "Failed to read corrections; using cached snapshot: \(error.localizedDescription, privacy: .public)")
+            return state.read()
         }
     }
 
-    private func save() {
-        do {
-            try storage.replaceCorrections(
-                corrections.map {
-                    CorrectionRecord(
-                        id: $0.id,
-                        originalText: $0.original,
-                        correctedText: $0.corrected,
-                        createdAt: $0.timestamp,
-                        appliedCount: $0.appliedCount
-                    )
-                })
-        } catch {
-            Self.logger.error(
-                "Failed to save corrections: \(error.localizedDescription, privacy: .public)")
-        }
+    private func currentCorrections() -> [Correction] {
+        refreshFromStorage()
+    }
+
+    private func logPersistenceFailure(_ error: Error, operation: String) {
+        Self.logger.error(
+            "Failed to \(operation): \(error.localizedDescription, privacy: .public)")
+    }
+
+    private func postDidChangeNotification() {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 }

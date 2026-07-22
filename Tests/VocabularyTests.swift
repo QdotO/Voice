@@ -230,4 +230,126 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(vocab2.allTerms.count, 1)
         XCTAssertEqual(vocab2.allTerms.first?.term, "PersistMe")
     }
+
+    // MARK: - Independent facade interleaving
+
+    func testIndependentFacadesPreserveInterleavedAddsAndDeletes() {
+        let first = Vocabulary(baseURL: tempDir)
+        let second = Vocabulary(baseURL: tempDir)
+
+        first.add("First", category: "Custom")
+        second.add("Second", category: "Custom")
+
+        let firstTerm = second.allTerms.first { $0.term == "First" }!
+        first.remove(firstTerm)
+        second.add("Third", category: "Custom")
+
+        XCTAssertEqual(first.allTerms.map(\.term), ["Second", "Third"])
+    }
+
+    func testIndependentFacadesAtomicallyDeduplicateConcurrentAdds() async {
+        let first = Vocabulary(baseURL: tempDir)
+        let second = Vocabulary(baseURL: tempDir)
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { first.add("Same", category: "Custom") }
+            group.addTask { second.add("same", category: "Custom") }
+        }
+
+        let storedTerms = first.allTerms.map(\.term)
+        XCTAssertEqual(storedTerms.count, 1)
+        XCTAssertEqual(storedTerms.first?.lowercased(), "same")
+    }
+
+    func testIndependentFacadesPreserveTogglesAndBulkEnabledUpdates() {
+        let first = Vocabulary(baseURL: tempDir)
+        let second = Vocabulary(baseURL: tempDir)
+
+        first.add("Toggle", category: "Custom")
+        first.add("Bulk One", category: "Custom")
+        second.add("Bulk Two", category: "Custom")
+
+        let toggle = first.allTerms.first { $0.term == "Toggle" }!
+        let bulkIDs = Set(second.allTerms.filter { $0.term.hasPrefix("Bulk") }.map(\.id))
+        first.toggle(toggle)
+        second.setEnabled(false, forIDs: bulkIDs)
+
+        let terms = first.allTerms
+        XCTAssertFalse(terms.first { $0.term == "Toggle" }!.enabled)
+        XCTAssertTrue(terms.filter { $0.term.hasPrefix("Bulk") }.allSatisfy { !$0.enabled })
+    }
+
+    func testIndependentFacadesApplyCategoryUpdateToCurrentRows() {
+        let first = Vocabulary(baseURL: tempDir)
+        let second = Vocabulary(baseURL: tempDir)
+
+        first.add("First Category", category: "Custom")
+        second.add("Second Category", category: "Custom")
+        first.add("Other Category", category: "Software Engineering")
+
+        second.setCategory("Custom", enabled: false)
+
+        XCTAssertTrue(first.terms(in: "Custom").allSatisfy { !$0.enabled })
+        XCTAssertTrue(first.terms(in: "Software Engineering").allSatisfy { $0.enabled })
+    }
+
+    func testIndependentFacadesResetIsCoherentAndWinsOverEarlierRows() {
+        let first = Vocabulary(baseURL: tempDir)
+        let second = Vocabulary(baseURL: tempDir)
+
+        first.add("First Custom", category: "Custom")
+        second.add("Second Custom", category: "Custom")
+        first.reset()
+
+        let terms = second.allTerms
+        XCTAssertGreaterThan(terms.count, 50)
+        XCTAssertFalse(terms.contains { $0.term == "First Custom" })
+        XCTAssertFalse(terms.contains { $0.term == "Second Custom" })
+    }
+
+    // MARK: - Prompt snapshots
+
+    func testEnabledTermSnapshotIsImmutableAfterMutation() async {
+        vocab.add("Before", category: "Custom")
+
+        let snapshot = await vocab.enabledTermSnapshot()
+        vocab.add("After", category: "Custom")
+
+        XCTAssertEqual(snapshot, ["Before"])
+        let updatedSnapshot = await vocab.enabledTermSnapshot()
+        XCTAssertEqual(updatedSnapshot, ["Before", "After"])
+    }
+
+    func testEnabledTermSnapshotStaysSafeDuringConcurrentMutation() async {
+        let expectedTerms = (0..<80).map { "Concurrent\($0)" }
+        let vocabulary = vocab!
+
+        let snapshots = await withTaskGroup(of: [[String]].self, returning: [[String]].self) {
+            group in
+            group.addTask {
+                for term in expectedTerms {
+                    vocabulary.add(term, category: "Custom")
+                }
+                return []
+            }
+            group.addTask {
+                var snapshots = [[String]]()
+                for _ in 0..<80 {
+                    snapshots.append(await vocabulary.enabledTermSnapshot())
+                }
+                return snapshots
+            }
+
+            var collected = [[String]]()
+            for await childSnapshots in group {
+                collected.append(contentsOf: childSnapshots)
+            }
+            return collected
+        }
+
+        let expectedSet = Set(expectedTerms)
+        XCTAssertTrue(snapshots.allSatisfy { $0.allSatisfy { expectedSet.contains($0) } })
+        let finalSnapshot = await vocabulary.enabledTermSnapshot()
+        XCTAssertEqual(Set(finalSnapshot), expectedSet)
+    }
 }

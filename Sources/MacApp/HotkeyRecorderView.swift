@@ -90,6 +90,13 @@ final class RecorderView: NSView {
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
+
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Keyboard shortcut recorder")
+        setAccessibilityHelp(
+            "Click to record a keyboard shortcut. Press Escape to cancel without changing the current shortcut."
+        )
+        focusRingType = .default
     }
 
     required init?(coder: NSCoder) {
@@ -108,6 +115,12 @@ final class RecorderView: NSView {
 
     override func keyDown(with event: NSEvent) {
         guard isRecording else { return }
+
+        if event.keyCode == 53 { // Escape
+            endRecording()
+            onRecordingEnded?()
+            return
+        }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let hotkeyFlags = flags.intersection([.command, .option, .control, .shift])
@@ -160,12 +173,18 @@ final class RecorderView: NSView {
                 ).description
                 label.stringValue =
                     display.isEmpty ? "Type shortcut..." : "Type shortcut... \(display)"
+                setAccessibilityValue(
+                    display.isEmpty ? "Recording shortcut. Press Escape to cancel." :
+                        "Recording shortcut. Preview \(display). Press Escape to cancel."
+                )
             } else {
                 label.stringValue = "Type shortcut..."
+                setAccessibilityValue("Recording shortcut. Press Escape to cancel.")
             }
         } else {
             let display = KeyCombo(carbonKeyCode: keyCode, carbonModifiers: modifiers).description
             label.stringValue = display.isEmpty ? "Click to set shortcut" : display
+            setAccessibilityValue(display.isEmpty ? "No shortcut set" : display)
         }
     }
 }

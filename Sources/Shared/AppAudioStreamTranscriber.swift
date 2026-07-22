@@ -3,7 +3,11 @@
 // cancellation semantics without modifying the package checkout.
 
 import Foundation
-import WhisperKit
+
+// WhisperKit's TranscribeTask is not annotated Sendable. This actor creates and
+// owns one task, calls it only from its single realtime loop, and awaits each run
+// before starting another. No task reference escapes this actor.
+@preconcurrency import WhisperKit
 
 /// App-owned live stream adapter. Permission is intentionally absent: caller
 /// must complete permission before invoking `startStreamTranscription()`.
@@ -40,6 +44,9 @@ actor AppAudioStreamTranscriber {
     private let audioProcessor: any AudioProcessing
     private let decodingOptions: DecodingOptions
     private var captureGate = AppOwnedCaptureGate()
+    private lazy var progressBridge = OrderedSerialBridge<TranscriptionProgress> { [weak self] progress in
+        await self?.onProgressCallback(progress)
+    }
 
     init(
         audioEncoder: any AudioEncoding,
@@ -92,25 +99,26 @@ actor AppAudioStreamTranscriber {
         do {
             try await realtimeLoop()
         } catch {
-            stopCapture()
+            await stopCapture()
             throw error
         }
     }
 
-    func stopStreamTranscription() {
+    func stopStreamTranscription() async {
         guard captureGate.stop() else { return }
-        stopCapture()
+        await stopCapture()
     }
 
     func didBeginCapture() -> Bool {
         captureGate.didBeginCapture
     }
 
-    private func stopCapture() {
+    private func stopCapture() async {
+        await progressBridge.stop(drain: true)
+        audioProcessor.stopRecording()
         if state.isRecording {
             state.isRecording = false
         }
-        audioProcessor.stopRecording()
     }
 
     private func realtimeLoop() async throws {
@@ -125,7 +133,6 @@ actor AppAudioStreamTranscriber {
     }
 
     private func onProgressCallback(_ progress: TranscriptionProgress) {
-        guard !captureGate.stopRequested else { return }
         let fallbacks = Int(progress.timings.totalDecodingFallbacks)
         if progress.text.count < state.currentText.count, fallbacks == state.currentFallbacks {
             state.unconfirmedText.append(state.currentText)
@@ -187,8 +194,10 @@ actor AppAudioStreamTranscriber {
         var options = decodingOptions
         options.clipTimestamps = [state.lastConfirmedSegmentEndSeconds]
         let checkWindow = compressionCheckWindow
-        return try await transcribeTask.run(audioArray: samples, decodeOptions: options) { [weak self] progress in
-            Task { await self?.onProgressCallback(progress) }
+        let progressBridge = self.progressBridge
+        return try await transcribeTask.run(audioArray: samples, decodeOptions: options) { progress in
+            let sequence = progressBridge.reserveSequence()
+            progressBridge.enqueue(progress, sequence: sequence)
             return Self.shouldStopEarly(
                 progress: progress,
                 options: options,

@@ -26,28 +26,31 @@ public struct DictationHistoryEntry: Codable, Identifiable, Equatable, Sendable 
     }
 }
 
-public final class DictationHistory {
+/// Synchronous facade over thread-safe SQLite storage with immutable configuration.
+public final class DictationHistory: @unchecked Sendable {
     public static let shared = DictationHistory()
     public static let didChangeNotification = Notification.Name("DictationHistoryDidChange")
     private static let logger = Logger(subsystem: "Whisper", category: "DictationHistory")
 
-    private var entries: [DictationHistoryEntry] = []
     private let storage: SQLiteV2Store
     private let maxEntries = 100
 
     private init() {
         storage = SQLiteV2Store.shared()
-        load()
     }
 
     /// Testable initializer — uses a custom directory for isolation
     init(baseURL: URL) {
         storage = SQLiteV2Store.shared(baseURL: baseURL)
-        load()
     }
 
     public func allEntries() -> [DictationHistoryEntry] {
-        entries.sorted { $0.timestamp > $1.timestamp }
+        do {
+            return try storage.fetchHistoryEntries().sorted { $0.timestamp > $1.timestamp }
+        } catch {
+            Self.logger.error("Failed to load history: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
     }
 
     public func addEntry(text: String, durationSeconds: Double, model: String, outputMethod: String)
@@ -55,51 +58,50 @@ public final class DictationHistory {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        entries.append(
-            DictationHistoryEntry(
-                text: trimmed,
-                durationSeconds: durationSeconds,
-                model: model,
-                outputMethod: outputMethod
-            ))
+        let entry = DictationHistoryEntry(
+            text: trimmed,
+            durationSeconds: durationSeconds,
+            model: model,
+            outputMethod: outputMethod
+        )
 
-        if entries.count > maxEntries {
-            entries = Array(entries.suffix(maxEntries))
+        do {
+            try storage.upsertHistoryEntryAndTrim(entry, maxEntries: maxEntries)
+            postChangeNotification()
+        } catch {
+            logStorageError("save", error: error)
         }
-
-        save()
     }
 
     public func entry(id: UUID) -> DictationHistoryEntry? {
-        entries.first { $0.id == id }
+        allEntries().first { $0.id == id }
     }
 
     public func remove(id: UUID) {
-        entries.removeAll { $0.id == id }
-        save()
+        do {
+            try storage.deleteHistoryEntry(id: id)
+            postChangeNotification()
+        } catch {
+            logStorageError("delete", error: error)
+        }
     }
 
     public func clear() {
-        entries.removeAll()
-        save()
-    }
-
-    // MARK: - Persistence
-
-    private func load() {
         do {
-            entries = try storage.fetchHistoryEntries()
+            try storage.deleteAllHistory()
+            postChangeNotification()
         } catch {
-            Self.logger.error("Failed to load history: \(error.localizedDescription, privacy: .public)")
+            logStorageError("clear", error: error)
         }
     }
 
-    private func save() {
-        do {
-            try storage.replaceHistoryEntries(entries)
-            NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
-        } catch {
-            Self.logger.error("Failed to save history: \(error.localizedDescription, privacy: .public)")
-        }
+    private func postChangeNotification() {
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    }
+
+    private func logStorageError(_ operation: String, error: Error) {
+        Self.logger.error(
+            "Failed to \(operation) history: \(error.localizedDescription, privacy: .public)"
+        )
     }
 }

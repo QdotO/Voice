@@ -10,7 +10,7 @@ public actor SQLiteRepositoryStore:
     private let store: SQLiteV2Store
 
     public init(baseURL: URL = SharedStorage.baseDirectory()) {
-        self.store = SQLiteV2Store.shared(baseURL: baseURL)
+        self.store = SQLiteV2Store(baseURL: baseURL)
     }
 
     public func fetchAllHistory() async throws -> [DictationHistoryEntry] {
@@ -18,23 +18,23 @@ public actor SQLiteRepositoryStore:
     }
 
     public func saveHistoryEntry(_ entry: DictationHistoryEntry) async throws {
-        var entries = try store.fetchHistoryEntries()
-        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
-            entries[index] = entry
-        } else {
-            entries.append(entry)
-        }
-        try store.replaceHistoryEntries(entries)
+        try store.upsertHistoryEntry(entry)
+    }
+
+    public func saveHistoryEntries(_ entries: [DictationHistoryEntry]) async throws {
+        try store.upsertHistoryEntries(entries)
     }
 
     public func deleteHistoryEntry(id: UUID) async throws {
-        var entries = try store.fetchHistoryEntries()
-        entries.removeAll { $0.id == id }
-        try store.replaceHistoryEntries(entries)
+        try store.deleteHistoryEntry(id: id)
+    }
+
+    public func deleteHistoryEntries(ids: [UUID]) async throws {
+        try store.deleteHistoryEntries(ids: ids)
     }
 
     public func clearHistory() async throws {
-        try store.replaceHistoryEntries([])
+        try store.deleteAllHistory()
     }
 
     public func fetchAllMemos() async throws -> [VoiceMemo] {
@@ -42,19 +42,19 @@ public actor SQLiteRepositoryStore:
     }
 
     public func saveMemo(_ memo: VoiceMemo) async throws {
-        var memos = try store.fetchMemos()
-        if let index = memos.firstIndex(where: { $0.id == memo.id }) {
-            memos[index] = memo
-        } else {
-            memos.append(memo)
-        }
-        try store.replaceMemos(memos)
+        try store.upsertMemo(memo)
+    }
+
+    public func saveMemos(_ memos: [VoiceMemo]) async throws {
+        try store.upsertMemos(memos)
     }
 
     public func deleteMemo(id: UUID) async throws {
-        var memos = try store.fetchMemos()
-        memos.removeAll { $0.id == id }
-        try store.replaceMemos(memos)
+        try store.deleteMemo(id: id)
+    }
+
+    public func deleteMemos(ids: [UUID]) async throws {
+        try store.deleteMemos(ids: ids)
     }
 
     public func fetchAllTerms() async throws -> [VocabTerm] {
@@ -62,19 +62,19 @@ public actor SQLiteRepositoryStore:
     }
 
     public func saveTerm(_ term: VocabTerm) async throws {
-        var terms = try store.fetchVocabularyTerms()
-        if let index = terms.firstIndex(where: { $0.id == term.id }) {
-            terms[index] = term
-        } else {
-            terms.append(term)
-        }
-        try store.replaceVocabularyTerms(terms)
+        try store.upsertVocabularyTerm(term)
+    }
+
+    public func saveTerms(_ terms: [VocabTerm]) async throws {
+        try store.upsertVocabularyTerms(terms)
     }
 
     public func deleteTerm(id: UUID) async throws {
-        var terms = try store.fetchVocabularyTerms()
-        terms.removeAll { $0.id == id }
-        try store.replaceVocabularyTerms(terms)
+        try store.deleteVocabularyTerm(id: id)
+    }
+
+    public func deleteTerms(ids: [UUID]) async throws {
+        try store.deleteVocabularyTerms(ids: ids)
     }
 
     public func fetchAllCorrections() async throws -> [CorrectionRecord] {
@@ -82,19 +82,19 @@ public actor SQLiteRepositoryStore:
     }
 
     public func saveCorrection(_ correction: CorrectionRecord) async throws {
-        var corrections = try store.fetchCorrections()
-        if let index = corrections.firstIndex(where: { $0.id == correction.id }) {
-            corrections[index] = correction
-        } else {
-            corrections.append(correction)
-        }
-        try store.replaceCorrections(corrections)
+        try store.upsertCorrection(correction)
+    }
+
+    public func saveCorrections(_ corrections: [CorrectionRecord]) async throws {
+        try store.upsertCorrections(corrections)
     }
 
     public func deleteCorrection(id: UUID) async throws {
-        var corrections = try store.fetchCorrections()
-        corrections.removeAll { $0.id == id }
-        try store.replaceCorrections(corrections)
+        try store.deleteCorrection(id: id)
+    }
+
+    public func deleteCorrections(ids: [UUID]) async throws {
+        try store.deleteCorrections(ids: ids)
     }
 
     public func loadMigrationState() async throws -> MigrationStateSnapshot {

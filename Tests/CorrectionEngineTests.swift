@@ -249,6 +249,76 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertEqual(result, "hello world")
     }
 
+    func testIndependentFacadesRetainInterleavedLearnsAndUpdates() {
+        let engine2 = CorrectionEngine(baseURL: tempDir)
+
+        engine.learn(original: "wrld", corrected: "world", suggestVocabulary: false)
+        engine2.learn(original: "teh", corrected: "the", suggestVocabulary: false)
+        engine.learn(original: "wrld", corrected: "word", suggestVocabulary: false)
+
+        let corrections = engine2.allCorrections()
+        XCTAssertEqual(corrections.count, 2)
+        XCTAssertEqual(engine.apply(to: "wrld teh"), "word the")
+    }
+
+    func testIndependentFacadesConcurrentSameOriginalLearnKeepsOneCorrection() async {
+        let engine1 = engine!
+        let engine2 = CorrectionEngine(baseURL: tempDir)
+        let values = (0..<40).map { "fixed\($0)" }
+
+        await withTaskGroup(of: Void.self) { group in
+            for (index, value) in values.enumerated() {
+                group.addTask {
+                    let target = index.isMultiple(of: 2) ? engine1 : engine2
+                    target.learn(
+                        original: "same-original",
+                        corrected: value,
+                        suggestVocabulary: false
+                    )
+                }
+            }
+        }
+
+        let corrections = engine.allCorrections()
+        XCTAssertEqual(corrections.count, 1)
+        XCTAssertTrue(values.contains(corrections[0].correctedText))
+    }
+
+    func testIndependentFacadesDeleteAndClearUseDurableCurrentState() {
+        let engine2 = CorrectionEngine(baseURL: tempDir)
+        engine.learn(original: "wrld", corrected: "world", suggestVocabulary: false)
+        engine2.learn(original: "teh", corrected: "the", suggestVocabulary: false)
+
+        let firstID = try! XCTUnwrap(engine.allCorrections().first { $0.originalText == "wrld" }).id
+        engine.removeCorrection(id: firstID)
+
+        XCTAssertEqual(engine2.apply(to: "wrld teh"), "wrld the")
+
+        engine2.clearCorrections()
+        XCTAssertTrue(engine.allCorrections().isEmpty)
+    }
+
+    func testDidChangeNotificationOnlyFiresForEffectiveMutations() throws {
+        let notificationCount = LockedSnapshot(0)
+        let token = NotificationCenter.default.addObserver(
+            forName: CorrectionEngine.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        engine.learn(original: "wrld", corrected: "world", suggestVocabulary: false)
+        engine.learn(original: "wrld", corrected: "world", suggestVocabulary: false)
+        engine.learn(original: "wrld", corrected: "word", suggestVocabulary: false)
+        engine.removeCorrection(id: UUID())
+        engine.clearCorrections()
+        engine.clearCorrections()
+
+        XCTAssertEqual(notificationCount.read(), 3)
+    }
+
     func testRemoveCorrectionDeletesByID() {
         engine.learn(original: "wrld", corrected: "world")
         let correction = try! XCTUnwrap(engine.allCorrections().first)
@@ -267,6 +337,56 @@ final class CorrectionEngineTests: XCTestCase {
 
         XCTAssertTrue(engine.allCorrections().isEmpty)
         XCTAssertEqual(engine.apply(to: "wrld teh"), "wrld teh")
+    }
+
+    // MARK: - Prompt snapshots
+
+    func testLearnedCorrectionSnapshotIsImmutableAfterMutation() async {
+        engine.learn(original: "wrld", corrected: "world", suggestVocabulary: false)
+
+        let snapshot = await engine.learnedCorrectionSnapshot()
+        engine.learn(original: "teh", corrected: "the", suggestVocabulary: false)
+
+        XCTAssertEqual(snapshot, ["world"])
+        let updatedSnapshot = await engine.learnedCorrectionSnapshot()
+        XCTAssertEqual(updatedSnapshot, ["world", "the"])
+    }
+
+    func testLearnedCorrectionSnapshotStaysSafeDuringConcurrentMutation() async {
+        let expectedCorrections = (0..<80).map { ("orig\($0)", "fixed\($0)") }
+        let correctionEngine = engine!
+
+        let snapshots = await withTaskGroup(of: [[String]].self, returning: [[String]].self) {
+            group in
+            group.addTask {
+                for (original, corrected) in expectedCorrections {
+                    correctionEngine.learn(
+                        original: original,
+                        corrected: corrected,
+                        suggestVocabulary: false
+                    )
+                }
+                return []
+            }
+            group.addTask {
+                var snapshots = [[String]]()
+                for _ in 0..<80 {
+                    snapshots.append(await correctionEngine.learnedCorrectionSnapshot())
+                }
+                return snapshots
+            }
+
+            var collected = [[String]]()
+            for await childSnapshots in group {
+                collected.append(contentsOf: childSnapshots)
+            }
+            return collected
+        }
+
+        let expectedSet = Set(expectedCorrections.map(\.1))
+        XCTAssertTrue(snapshots.allSatisfy { $0.allSatisfy { expectedSet.contains($0) } })
+        let finalSnapshot = await correctionEngine.learnedCorrectionSnapshot()
+        XCTAssertEqual(Set(finalSnapshot), expectedSet)
     }
 
     // MARK: - Edge Cases (capitalization)

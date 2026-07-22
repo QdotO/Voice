@@ -17,11 +17,13 @@ public struct VocabTerm: Codable, Identifiable, Hashable, Sendable {
 }
 
 /// Manages custom vocabulary for transcription context
-public final class Vocabulary {
+/// Synchronous facade with immutable configuration and lock-protected vocabulary
+/// snapshots; SQLite serializes persistence access.
+public final class Vocabulary: @unchecked Sendable {
     public static let shared = Vocabulary()
     private static let logger = Logger(subsystem: "Whisper", category: "Vocabulary")
 
-    private var terms: [VocabTerm] = []
+    private let state: LockedSnapshot<[VocabTerm]>
     private let storage: SQLiteV2Store
 
     /// All defined categories
@@ -42,39 +44,44 @@ public final class Vocabulary {
     ]
 
     private init() {
+        state = LockedSnapshot([])
         storage = SQLiteV2Store.shared()
         load()
 
         // Initialize with presets if empty
-        if terms.isEmpty {
-            loadAllPresets()
-            save()
+        if currentTerms().isEmpty {
+            persistReset(to: loadAllPresets())
         }
     }
 
     /// Testable initializer — uses a custom directory for isolation, optionally skips presets
     init(baseURL: URL, loadPresets: Bool = false) {
+        state = LockedSnapshot([])
         storage = SQLiteV2Store.shared(baseURL: baseURL)
         load()
-        if loadPresets && terms.isEmpty {
-            loadAllPresets()
-            save()
+        if loadPresets && currentTerms().isEmpty {
+            persistReset(to: loadAllPresets())
         }
     }
 
     // MARK: - Public API
 
     /// Get all terms
-    public var allTerms: [VocabTerm] { terms }
+    public var allTerms: [VocabTerm] { currentTerms() }
 
     /// Get terms by category
     public func terms(in category: String) -> [VocabTerm] {
-        terms.filter { $0.category == category }
+        currentTerms().filter { $0.category == category }
     }
 
     /// Get enabled terms only
     public var enabledTerms: [VocabTerm] {
-        terms.filter { $0.enabled }
+        currentTerms().filter { $0.enabled }
+    }
+
+    /// Immutable enabled-term snapshot for Sendable prompt work.
+    public func enabledTermSnapshot() async -> [String] {
+        currentTerms().filter { $0.enabled }.map(\.term)
     }
 
     /// Generate prompt for Whisper context
@@ -90,35 +97,43 @@ public final class Vocabulary {
 
     /// Add a new term
     public func add(_ term: String, category: String) {
-        // Avoid duplicates
-        guard !terms.contains(where: { $0.term.lowercased() == term.lowercased() }) else { return }
-        terms.append(VocabTerm(term: term, category: category))
-        save()
+        do {
+            _ = try storage.insertVocabularyTermIfAbsent(term: term, category: category)
+            refreshCache()
+        } catch {
+            logPersistenceFailure("add", error: error)
+        }
     }
 
     /// Remove a term
     public func remove(_ term: VocabTerm) {
-        terms.removeAll { $0.id == term.id }
-        save()
+        do {
+            try storage.deleteVocabularyTerm(id: term.id)
+            refreshCache()
+        } catch {
+            logPersistenceFailure("remove", error: error)
+        }
     }
 
     /// Remove multiple terms in one persistence operation.
     public func remove(ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
 
-        let originalCount = terms.count
-        terms.removeAll { ids.contains($0.id) }
-
-        if terms.count != originalCount {
-            save()
+        do {
+            try storage.deleteVocabularyTerms(ids: Array(ids))
+            refreshCache()
+        } catch {
+            logPersistenceFailure("remove IDs", error: error)
         }
     }
 
     /// Toggle a term's enabled state
     public func toggle(_ term: VocabTerm) {
-        if let index = terms.firstIndex(where: { $0.id == term.id }) {
-            terms[index].enabled.toggle()
-            save()
+        do {
+            _ = try storage.toggleVocabularyTerm(id: term.id)
+            refreshCache()
+        } catch {
+            logPersistenceFailure("toggle", error: error)
         }
     }
 
@@ -126,77 +141,101 @@ public final class Vocabulary {
     public func setEnabled(_ enabled: Bool, forIDs ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
 
-        var didChange = false
-        for index in terms.indices where ids.contains(terms[index].id) {
-            guard terms[index].enabled != enabled else { continue }
-            terms[index].enabled = enabled
-            didChange = true
-        }
-
-        if didChange {
-            save()
+        do {
+            _ = try storage.setVocabularyTermsEnabled(enabled, ids: ids)
+            refreshCache()
+        } catch {
+            logPersistenceFailure("set enabled", error: error)
         }
     }
 
     /// Enable/disable entire category
     public func setCategory(_ category: String, enabled: Bool) {
-        for i in terms.indices where terms[i].category == category {
-            terms[i].enabled = enabled
+        do {
+            _ = try storage.setVocabularyCategoryEnabled(enabled, category: category)
+            refreshCache()
+        } catch {
+            logPersistenceFailure("set category", error: error)
         }
-        save()
     }
 
     /// Reset to default presets
     public func reset() {
-        terms.removeAll()
-        loadAllPresets()
-        save()
+        persistReset(to: loadAllPresets())
     }
 
     // MARK: - Persistence
 
     private func load() {
+        refreshCache()
+    }
+
+    private func currentTerms() -> [VocabTerm] {
         do {
-            terms = try storage.fetchVocabularyTerms()
+            let terms = try storage.fetchVocabularyTerms()
+            state.replace(with: terms)
+            return terms
         } catch {
-            Self.logger.error(
-                "Failed to load vocabulary: \(error.localizedDescription, privacy: .public)")
+            logPersistenceFailure("load", error: error)
+            return state.read()
         }
     }
 
-    private func save() {
+    private func refreshCache() {
         do {
-            try storage.replaceVocabularyTerms(terms)
+            state.replace(with: try storage.fetchVocabularyTerms())
         } catch {
-            Self.logger.error(
-                "Failed to save vocabulary: \(error.localizedDescription, privacy: .public)")
+            logPersistenceFailure("refresh", error: error)
         }
+    }
+
+    private func persistReset(to terms: [VocabTerm]) {
+        do {
+            try storage.resetVocabularyTerms(terms)
+            state.replace(with: terms)
+        } catch {
+            logPersistenceFailure("reset", error: error)
+        }
+    }
+
+    private func logPersistenceFailure(_ operation: String, error: Error) {
+        Self.logger.error(
+            "Failed to \(operation) vocabulary: \(error.localizedDescription, privacy: .public)")
     }
 
     // MARK: - Presets
 
-    private func loadAllPresets() {
-        loadSoftwareEngineering()
-        loadJavaScriptTypeScript()
-        loadFrontend()
-        loadHipHop()
-        loadHoustonTexas()
-        loadLouisianaNOLA()
-        loadTrackAndField()
-        loadBasketball()
-        loadSports()
-        loadStandUpComedy()
-        loadPopCulture()
-        loadSouthernSlang()
+    private func loadAllPresets() -> [VocabTerm] {
+        var presets = [VocabTerm]()
+        loadSoftwareEngineering(into: &presets)
+        loadJavaScriptTypeScript(into: &presets)
+        loadFrontend(into: &presets)
+        loadHipHop(into: &presets)
+        loadHoustonTexas(into: &presets)
+        loadLouisianaNOLA(into: &presets)
+        loadTrackAndField(into: &presets)
+        loadBasketball(into: &presets)
+        loadSports(into: &presets)
+        loadStandUpComedy(into: &presets)
+        loadPopCulture(into: &presets)
+        loadSouthernSlang(into: &presets)
+        return presets
     }
 
-    private func loadPresetTerms(_ terms: [String], category: String) {
+    private func loadPresetTerms(
+        _ terms: [String],
+        category: String,
+        into presets: inout [VocabTerm]
+    ) {
         for term in terms {
-            add(term, category: category)
+            guard !presets.contains(where: {
+                $0.term.lowercased() == term.lowercased()
+            }) else { continue }
+            presets.append(VocabTerm(term: term, category: category))
         }
     }
 
-    private func loadSoftwareEngineering() {
+    private func loadSoftwareEngineering(into presets: inout [VocabTerm]) {
         let terms = [
             // Languages & Runtimes
             "Python", "Rust", "Go", "Golang", "Swift", "Kotlin", "Ruby", "Scala",
@@ -226,10 +265,10 @@ public final class Vocabulary {
             "Langchain", "LlamaIndex", "Pinecone", "Weaviate", "ChromaDB",
             "transformer", "BERT", "diffusion", "Stable Diffusion", "Midjourney",
         ]
-        loadPresetTerms(terms, category: "Software Engineering")
+        loadPresetTerms(terms, category: "Software Engineering", into: &presets)
     }
 
-    private func loadJavaScriptTypeScript() {
+    private func loadJavaScriptTypeScript(into presets: inout [VocabTerm]) {
         let terms = [
             // Core
             "JavaScript", "TypeScript", "ECMAScript", "ES6", "ESM", "CommonJS",
@@ -254,10 +293,10 @@ public final class Vocabulary {
             // Types
             "Zod", "Yup", "io-ts", "TypeBox", "tRPC", "Prisma", "Drizzle",
         ]
-        loadPresetTerms(terms, category: "JavaScript/TypeScript")
+        loadPresetTerms(terms, category: "JavaScript/TypeScript", into: &presets)
     }
 
-    private func loadFrontend() {
+    private func loadFrontend(into presets: inout [VocabTerm]) {
         let terms = [
             // CSS
             "Tailwind", "Tailwind CSS", "CSS-in-JS", "styled-components", "Emotion",
@@ -280,10 +319,10 @@ public final class Vocabulary {
             "accessibility", "a11y", "ARIA", "screen reader", "WCAG",
             "semantic HTML", "focus management", "keyboard navigation",
         ]
-        loadPresetTerms(terms, category: "Frontend")
+        loadPresetTerms(terms, category: "Frontend", into: &presets)
     }
 
-    private func loadHipHop() {
+    private func loadHipHop(into presets: inout [VocabTerm]) {
         let terms = [
             // Houston/Texas Artists
             "DJ Screw", "Scarface", "Geto Boys", "UGK", "Bun B", "Pimp C",
@@ -316,10 +355,10 @@ public final class Vocabulary {
             "feature", "collab", "diss track", "beef", "clout",
             "drip", "flex", "ice", "bling", "chain", "grill",
         ]
-        loadPresetTerms(terms, category: "Hip-Hop")
+        loadPresetTerms(terms, category: "Hip-Hop", into: &presets)
     }
 
-    private func loadHoustonTexas() {
+    private func loadHoustonTexas(into presets: inout [VocabTerm]) {
         let terms = [
             // Houston Areas
             "Third Ward", "Fifth Ward", "Fourth Ward", "Sunnyside", "Acres Homes",
@@ -351,10 +390,10 @@ public final class Vocabulary {
             "Texans", "Rockets", "Astros", "Dynamo", "Dash",
             "Cougars", "UH", "Rice Owls", "TSU Tigers",
         ]
-        loadPresetTerms(terms, category: "Houston/Texas")
+        loadPresetTerms(terms, category: "Houston/Texas", into: &presets)
     }
 
-    private func loadLouisianaNOLA() {
+    private func loadLouisianaNOLA(into presets: inout [VocabTerm]) {
         let terms = [
             // New Orleans Areas
             "French Quarter", "Garden District", "Treme", "Marigny",
@@ -388,10 +427,10 @@ public final class Vocabulary {
             "Louis Armstrong", "Fats Domino", "Professor Longhair",
             "The Meters", "Rebirth Brass Band", "Big Freedia",
         ]
-        loadPresetTerms(terms, category: "Louisiana/NOLA")
+        loadPresetTerms(terms, category: "Louisiana/NOLA", into: &presets)
     }
 
-    private func loadTrackAndField() {
+    private func loadTrackAndField(into presets: inout [VocabTerm]) {
         let terms = [
             // Events
             "100 meters", "200 meters", "400 meters", "800 meters", "1500 meters",
@@ -423,10 +462,10 @@ public final class Vocabulary {
             "heat", "semifinal", "final", "Diamond League",
             "Olympic Trials", "World Championships", "NCAA",
         ]
-        loadPresetTerms(terms, category: "Track & Field")
+        loadPresetTerms(terms, category: "Track & Field", into: &presets)
     }
 
-    private func loadBasketball() {
+    private func loadBasketball(into presets: inout [VocabTerm]) {
         let terms = [
             // Houston
             "Houston Rockets", "Hakeem Olajuwon", "Clyde Drexler",
@@ -459,10 +498,10 @@ public final class Vocabulary {
             "point guard", "shooting guard", "small forward",
             "power forward", "center", "stretch five", "positionless",
         ]
-        loadPresetTerms(terms, category: "Basketball")
+        loadPresetTerms(terms, category: "Basketball", into: &presets)
     }
 
-    private func loadSports() {
+    private func loadSports(into presets: inout [VocabTerm]) {
         let terms = [
             // Football (Houston focus)
             "Texans", "JJ Watt", "Andre Johnson", "Arian Foster",
@@ -502,10 +541,10 @@ public final class Vocabulary {
             "Grand Slam", "Wimbledon", "US Open", "French Open",
             "Serena Williams", "Venus Williams", "Roger Federer",
         ]
-        loadPresetTerms(terms, category: "Sports")
+        loadPresetTerms(terms, category: "Sports", into: &presets)
     }
 
-    private func loadStandUpComedy() {
+    private func loadStandUpComedy(into presets: inout [VocabTerm]) {
         let terms = [
             // Black Comedians (Classic)
             "Richard Pryor", "Eddie Murphy", "Martin Lawrence",
@@ -541,10 +580,10 @@ public final class Vocabulary {
             "Raw", "Delirious", "The Original Kings of Comedy",
             "Bring the Pain", "Bigger & Blacker", "Kill the Messenger",
         ]
-        loadPresetTerms(terms, category: "Stand-Up Comedy")
+        loadPresetTerms(terms, category: "Stand-Up Comedy", into: &presets)
     }
 
-    private func loadPopCulture() {
+    private func loadPopCulture(into presets: inout [VocabTerm]) {
         let terms = [
             // 80s
             "MTV", "VHS", "Walkman", "boombox", "breakdancing",
@@ -578,10 +617,10 @@ public final class Vocabulary {
             "rent free", "living rent free", "touch grass",
             "ratio", "L take", "W", "based", "goated",
         ]
-        loadPresetTerms(terms, category: "Pop Culture")
+        loadPresetTerms(terms, category: "Pop Culture", into: &presets)
     }
 
-    private func loadSouthernSlang() {
+    private func loadSouthernSlang(into presets: inout [VocabTerm]) {
         let terms = [
             // General Southern
             "y'all", "fixin' to", "might could", "used to could",
@@ -610,6 +649,6 @@ public final class Vocabulary {
             "grippin' grain", "sittin' sideways", "tippin'",
             "comin' down", "pourin' up", "leanin'",
         ]
-        loadPresetTerms(terms, category: "Southern Slang")
+        loadPresetTerms(terms, category: "Southern Slang", into: &presets)
     }
 }
